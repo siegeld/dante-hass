@@ -1,0 +1,18 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Dante Audio Network",
+        "description": "Discovered {device_count} Dante device(s) on the network:\n\n{device_list}\n\nConfirm to add the Dante network integration.",
+        "data": {}
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to discover Dante devices on the network.",
+      "no_devices_found": "No Dante devices found on the network."
+    },
+    "abort": {
+      "already_configured": "Dante network is already configured."
+    }
+  }
+}

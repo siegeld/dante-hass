@@ -1,0 +1,72 @@
+add_subscription:
+  name: Add Subscription
+  description: Route a TX channel to an RX channel across Dante devices.
+  fields:
+    rx_device:
+      name: RX Device
+      description: Name of the receiving device.
+      required: true
+      example: "AVIO-USB-2x2-1"
+      selector:
+        text:
+    rx_channel:
+      name: RX Channel
+      description: RX channel number (1-based).
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 64
+          mode: box
+    tx_device:
+      name: TX Device
+      description: Name of the transmitting device.
+      required: true
+      example: "AVIO-Analog-4x0-1"
+      selector:
+        text:
+    tx_channel:
+      name: TX Channel
+      description: TX channel number (1-based).
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 64
+          mode: box
+
+remove_subscription:
+  name: Remove Subscription
+  description: Remove a subscription from an RX channel.
+  fields:
+    rx_device:
+      name: RX Device
+      description: Name of the receiving device.
+      required: true
+      example: "AVIO-USB-2x2-1"
+      selector:
+        text:
+    rx_channel:
+      name: RX Channel
+      description: RX channel number (1-based).
+      required: true
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 64
+          mode: box
+
+identify:
+  name: Identify Device
+  description: Flash the LED on a Dante device for identification.
+  fields:
+    device_name:
+      name: Device Name
+      description: Name of the Dante device to identify.
+      required: true
+      example: "AVIO-USB-2x2-1"
+      selector:
+        text:

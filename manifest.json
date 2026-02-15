@@ -1,0 +1,11 @@
+{
+  "domain": "dante",
+  "name": "Dante Audio Network",
+  "version": "0.1.0",
+  "documentation": "https://github.com/chris-ritsen/network-audio-controller",
+  "codeowners": ["@siegeld"],
+  "requirements": [],
+  "dependencies": ["zeroconf"],
+  "config_flow": true,
+  "iot_class": "local_polling"
+}
