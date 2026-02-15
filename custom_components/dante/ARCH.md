@@ -99,6 +99,66 @@ Config Entry: "Dante Audio Network"
               └── button.danterbr7_theater_mixer_identify
 ```
 
+## AES67/SAP Stream Discovery
+
+### Overview
+Crestron NAX and other AES67-capable devices advertise multicast audio streams via SAP (Session Announcement Protocol). The coordinator discovers these streams and presents them as selectable sources alongside native Dante TX channels.
+
+### SAP Discovery Flow
+```
+SAP multicast (239.255.255.255:9875)
+          |
+    UDP socket joins multicast group
+    (binds to Dante VLAN interface)
+          |
+    Collect packets for SAP_TIMEOUT (10s)
+          |
+    Parse SAP header (v1, IPv4/IPv6, optional MIME type)
+          |
+    Parse SDP payload:
+      s= session name
+      o= origin IP, session_id (used as flow ID)
+      c= multicast address
+      m= port, codec
+      a=rtpmap: encoding details
+      i= channel names
+          |
+    Merge into self._aes67_streams cache
+          |
+    Dropdown options: "[AES67] SessionName - Tx Left", "[AES67] SessionName - Tx Right"
+```
+
+### AES67 Subscription Protocol (command 0x3201)
+Native Dante subscriptions use command 0x3010 on port 8800 via the netaudio library. AES67 subscriptions use a different command and port, reverse-engineered from Dante Controller packet captures:
+
+- **Port**: 4440 (not in netaudio's PORTS list)
+- **Magic**: 0x2809 (vs netaudio's 0x27ff)
+- **Command**: 0x3201
+- **Packet size**: 112 bytes
+
+Key fields in the 112-byte packet:
+```
+Bytes 0-1:     28 09       Magic
+Bytes 2-3:     00 70       Length (112)
+Bytes 4-5:     XX XX       Sequence number
+Bytes 6-7:     32 01       Command (AES67 subscribe)
+Bytes 18-19:   42 02       Record type
+Bytes 44-47:   source IP   (AES67 origin, e.g., NAX device)
+Bytes 76-79:   flow ID     (SDP session_id from o= line)
+Bytes 96-97:   RX channel  (1-based)
+Bytes 98-99:   total flow channels
+Byte 102:      flow ch idx (1=L, 2=R for stereo)
+Byte 104:      encoding    (0x06=L16, 0x08=L24, 0x0A=L32)
+Byte 105:      channels    (in flow)
+Bytes 106-107: RTP port    (typically 5004)
+Bytes 108-111: multicast   (address of the flow)
+```
+
+The coordinator sends this command directly via UDP (bypassing netaudio) and checks the response for a matching command echo to confirm success.
+
+### AES67 Selection Persistence
+AES67 subscriptions are tracked in `coordinator._aes67_selections` (a dict keyed by `(device_name, rx_channel_num)`). This is needed because AES67 subscriptions don't appear in the device's native subscription list returned by netaudio. The `current_option` property checks this dict first before falling back to native subscription data.
+
 ## Coordinator Data Schema
 
 ```python
@@ -133,5 +193,20 @@ coordinator.data = {
         ],
     },
     ...
+
+    # AES67 streams (keyed by session name)
+    "__aes67_streams__": {
+        "MediaStreamNax1Player1": {
+            "session_name": "MediaStreamNax1Player1",
+            "session_id": "821074694",
+            "origin_ip": "10.11.7.75",
+            "multicast_addr": "239.69.85.220",
+            "port": 5004,
+            "codec": "L24/48000/2",
+            "channels": 2,
+            "channel_names": ["Tx Left", "Tx Right"],
+        },
+        ...
+    },
 }
 ```

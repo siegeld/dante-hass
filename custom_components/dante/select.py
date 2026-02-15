@@ -158,13 +158,20 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
 
     @property
     def options(self) -> list[str]:
-        """Return all available TX channels as options."""
+        """Return all available TX channels and AES67 streams as options."""
         tx_options = self.coordinator.get_all_tx_channels()
-        return [SUBSCRIPTION_NONE] + tx_options
+        aes67_options = self.coordinator.get_all_aes67_sources()
+        return [SUBSCRIPTION_NONE] + tx_options + aes67_options
 
     @property
     def current_option(self) -> str | None:
         """Return the current subscription source for this RX channel."""
+        # Check for local AES67 selection first
+        key = (self._device_name, self._rx_channel_num)
+        aes67_sel = self.coordinator._aes67_selections.get(key)
+        if aes67_sel:
+            return aes67_sel
+
         data = self.device_data
         if not data:
             return SUBSCRIPTION_NONE
@@ -192,7 +199,10 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
             )
             return
 
+        key = (self._device_name, self._rx_channel_num)
+
         if option == SUBSCRIPTION_NONE:
+            self.coordinator._aes67_selections.pop(key, None)
             try:
                 await device.remove_subscription(rx_ch)
                 await self.coordinator.async_request_refresh()
@@ -204,6 +214,55 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
                     err,
                 )
             return
+
+        if option.startswith("[AES67] "):
+            result = self.coordinator.get_aes67_stream_info(option)
+            if not result:
+                LOGGER.error("AES67 stream not found for option: %s", option)
+                return
+
+            stream_info, flow_channel = result
+            device_ip = self.device_data.get("ipv4") if self.device_data else None
+            if not device_ip:
+                LOGGER.error("No IP for device %s", self._device_name)
+                return
+
+            try:
+                success = await self.hass.async_add_executor_job(
+                    self.coordinator._send_aes67_subscribe,
+                    device_ip,
+                    self._rx_channel_num,
+                    flow_channel,
+                    stream_info,
+                )
+                if success:
+                    self.coordinator._aes67_selections[key] = option
+                    self.async_write_ha_state()
+                    LOGGER.warning(
+                        "AES67 subscribed %s ch %d -> %s (flow ch %d)",
+                        self._device_name,
+                        self._rx_channel_num,
+                        option,
+                        flow_channel,
+                    )
+                else:
+                    LOGGER.error(
+                        "AES67 subscribe failed for %s ch %d -> %s",
+                        self._device_name,
+                        self._rx_channel_num,
+                        option,
+                    )
+            except Exception as err:
+                LOGGER.error(
+                    "AES67 subscribe error for %s ch %d: %s",
+                    self._device_name,
+                    self._rx_channel_num,
+                    err,
+                )
+            return
+
+        # Clear any AES67 override when switching to a Dante source
+        self.coordinator._aes67_selections.pop(key, None)
 
         # Parse "DeviceName - ChannelName"
         if " - " not in option:
