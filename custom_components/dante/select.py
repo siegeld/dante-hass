@@ -28,24 +28,33 @@ async def async_setup_entry(
 ) -> None:
     """Set up Dante select entities."""
     coordinator: DanteDataUpdateCoordinator = entry.runtime_data
+    known_devices: set[str] = set()
 
-    entities: list[SelectEntity] = []
-    if coordinator.data:
+    def _add_new_devices() -> None:
+        """Add entities for any newly discovered devices."""
+        if not coordinator.data:
+            return
+        new_entities: list[SelectEntity] = []
         for device_name, dev_data in coordinator.data.items():
-            entities.append(
-                DanteSampleRateSelect(coordinator, device_name)
-            )
-            entities.append(
-                DanteEncodingSelect(coordinator, device_name)
-            )
-            for ch_num, ch_data in dev_data.get("rx_channels", {}).items():
-                entities.append(
-                    DanteSubscriptionSelect(
-                        coordinator, device_name, ch_num, ch_data["name"]
-                    )
+            if device_name not in known_devices:
+                known_devices.add(device_name)
+                new_entities.append(
+                    DanteSampleRateSelect(coordinator, device_name)
                 )
+                new_entities.append(
+                    DanteEncodingSelect(coordinator, device_name)
+                )
+                for ch_num, ch_data in dev_data.get("rx_channels", {}).items():
+                    new_entities.append(
+                        DanteSubscriptionSelect(
+                            coordinator, device_name, ch_num, ch_data["name"]
+                        )
+                    )
+        if new_entities:
+            async_add_entities(new_entities)
 
-    async_add_entities(entities)
+    _add_new_devices()
+    entry.async_on_unload(coordinator.async_add_listener(lambda: _add_new_devices()))
 
 
 class DanteSampleRateSelect(DanteEntity, SelectEntity):

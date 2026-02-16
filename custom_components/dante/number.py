@@ -25,37 +25,47 @@ async def async_setup_entry(
 ) -> None:
     """Set up Dante number entities."""
     coordinator: DanteDataUpdateCoordinator = entry.runtime_data
+    known_devices: set[str] = set()
 
-    entities: list[NumberEntity] = []
-    if coordinator.data:
+    def _add_new_devices() -> None:
+        """Add entities for any newly discovered devices."""
+        if not coordinator.data:
+            return
+        new_entities: list[NumberEntity] = []
         for device_name, dev_data in coordinator.data.items():
-            entities.append(DanteLatencyNumber(coordinator, device_name))
-
-            model_id = dev_data.get("model_id")
-            if model_id in AVIO_INPUT_MODELS:
-                for ch_num, ch_data in dev_data.get("tx_channels", {}).items():
-                    entities.append(
-                        DanteGainNumber(
-                            coordinator,
-                            device_name,
-                            ch_num,
-                            ch_data["name"],
-                            "input",
+            if device_name not in known_devices:
+                known_devices.add(device_name)
+                new_entities.append(
+                    DanteLatencyNumber(coordinator, device_name)
+                )
+                model_id = dev_data.get("model_id")
+                if model_id in AVIO_INPUT_MODELS:
+                    for ch_num, ch_data in dev_data.get("tx_channels", {}).items():
+                        new_entities.append(
+                            DanteGainNumber(
+                                coordinator,
+                                device_name,
+                                ch_num,
+                                ch_data["name"],
+                                "input",
+                            )
                         )
-                    )
-            elif model_id in AVIO_OUTPUT_MODELS:
-                for ch_num, ch_data in dev_data.get("rx_channels", {}).items():
-                    entities.append(
-                        DanteGainNumber(
-                            coordinator,
-                            device_name,
-                            ch_num,
-                            ch_data["name"],
-                            "output",
+                elif model_id in AVIO_OUTPUT_MODELS:
+                    for ch_num, ch_data in dev_data.get("rx_channels", {}).items():
+                        new_entities.append(
+                            DanteGainNumber(
+                                coordinator,
+                                device_name,
+                                ch_num,
+                                ch_data["name"],
+                                "output",
+                            )
                         )
-                    )
+        if new_entities:
+            async_add_entities(new_entities)
 
-    async_add_entities(entities)
+    _add_new_devices()
+    entry.async_on_unload(coordinator.async_add_listener(lambda: _add_new_devices()))
 
 
 class DanteLatencyNumber(DanteEntity, NumberEntity):

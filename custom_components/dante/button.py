@@ -18,13 +18,24 @@ async def async_setup_entry(
 ) -> None:
     """Set up Dante button entities."""
     coordinator: DanteDataUpdateCoordinator = entry.runtime_data
+    known_devices: set[str] = set()
 
-    entities: list[ButtonEntity] = []
-    if coordinator.data:
+    def _add_new_devices() -> None:
+        """Add entities for any newly discovered devices."""
+        if not coordinator.data:
+            return
+        new_entities: list[ButtonEntity] = []
         for device_name in coordinator.data:
-            entities.append(DanteIdentifyButton(coordinator, device_name))
+            if device_name not in known_devices:
+                known_devices.add(device_name)
+                new_entities.append(
+                    DanteIdentifyButton(coordinator, device_name)
+                )
+        if new_entities:
+            async_add_entities(new_entities)
 
-    async_add_entities(entities)
+    _add_new_devices()
+    entry.async_on_unload(coordinator.async_add_listener(lambda: _add_new_devices()))
 
 
 class DanteIdentifyButton(DanteEntity, ButtonEntity):

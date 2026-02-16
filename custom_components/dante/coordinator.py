@@ -43,46 +43,64 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._miss_count: dict[str, int] = {}
         # Cache last-known device data for persistence across missed cycles
         self._cached_data: dict[str, Any] = {}
-        # First poll flag — use longer timeout on startup
-        self._first_poll = True
+        # Persistent mDNS browser state
+        self._browser: AsyncServiceBrowser | None = None
+        self._discovered_services: dict[str, str] = {}  # name -> service_type
+        self._browser_ready = asyncio.Event()
+
+    def _on_service_state_change(
+        self,
+        service_type: str,
+        name: str,
+        state_change: ServiceStateChange,
+        **kwargs,
+    ) -> None:
+        """Handle mDNS service state changes from the persistent browser."""
+        if state_change is ServiceStateChange.Added:
+            self._discovered_services[name] = service_type
+        elif state_change is ServiceStateChange.Removed:
+            self._discovered_services.pop(name, None)
+
+    async def async_start_browser(self) -> None:
+        """Start the persistent mDNS browser."""
+        if self._browser is not None:
+            return
+        aiozc = await zeroconf.async_get_async_instance(self.hass)
+        self._browser = AsyncServiceBrowser(
+            aiozc.zeroconf,
+            SERVICES,
+            handlers=[self._on_service_state_change],
+        )
+        # Give devices time to respond on initial startup
+        await asyncio.sleep(MDNS_TIMEOUT * 3)
+        self._browser_ready.set()
+        LOGGER.info(
+            "Persistent mDNS browser started, %d services found initially",
+            len(self._discovered_services),
+        )
+
+    async def async_stop_browser(self) -> None:
+        """Stop the persistent mDNS browser."""
+        if self._browser is not None:
+            await self._browser.async_cancel()
+            self._browser = None
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from the Dante network."""
         try:
-            LOGGER.debug("Dante poll starting (first=%s)", self._first_poll)
+            # Wait for browser to be ready (only blocks on first poll)
+            await asyncio.wait_for(self._browser_ready.wait(), timeout=MDNS_TIMEOUT * 4)
+
             aiozc = await zeroconf.async_get_async_instance(self.hass)
 
-            # Browse for services — longer timeout on first poll (startup)
-            found_services: list[tuple[str, str]] = []
-
-            def on_state_change(
-                service_type: str,
-                name: str,
-                state_change: ServiceStateChange,
-                **kwargs,
-            ) -> None:
-                if state_change is ServiceStateChange.Added:
-                    found_services.append((service_type, name))
-
-            browser = AsyncServiceBrowser(
-                aiozc.zeroconf,
-                SERVICES,
-                handlers=[on_state_change],
-            )
-
-            if self._first_poll:
-                # Startup: wait longer for all devices to respond
-                await asyncio.sleep(MDNS_TIMEOUT * 3)
-                self._first_poll = False
-            else:
-                await asyncio.sleep(MDNS_TIMEOUT)
-            await browser.async_cancel()
-            LOGGER.debug("Dante poll found %d services", len(found_services))
+            # Snapshot current discovered services from the persistent browser
+            found_services = list(self._discovered_services.items())
+            LOGGER.debug("Dante poll: %d services from persistent browser", len(found_services))
 
             # Resolve services and build device objects
             device_hosts: dict[str, dict] = {}
 
-            for service_type, name in found_services:
+            for name, service_type in found_services:
                 try:
                     info = AsyncServiceInfo(service_type, name)
                     if not await info.async_request(aiozc.zeroconf, 3000):
