@@ -87,6 +87,10 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         props[k] = v
 
                     server_name = info.server or name.split(".")[0]
+                    # Normalize: strip trailing dot and .local suffix
+                    server_name = server_name.rstrip(".")
+                    if server_name.endswith(".local"):
+                        server_name = server_name[:-6]
 
                     if server_name not in device_hosts:
                         device_hosts[server_name] = {
@@ -215,6 +219,10 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     LOGGER.warning("SAP discovery failed: %s", err)
             else:
                 LOGGER.warning("No Dante device IPs found, skipping SAP discovery")
+
+            # Reconcile AES67 subscriptions from device state + SAP streams
+            if self._aes67_streams:
+                self._reconcile_aes67_subscriptions(result)
 
             return result
 
@@ -546,3 +554,79 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return (stream_info, idx)
 
         return None
+
+    def _reconcile_aes67_subscriptions(self, result: dict[str, Any]) -> None:
+        """Restore _aes67_selections from device subscriptions + SAP streams.
+
+        AES67 subscriptions survive restart at the device level, but the
+        display-string mapping (_aes67_selections) is runtime-only. After SAP
+        discovery populates _aes67_streams, cross-reference each device's
+        subscription data against known AES67 streams to rebuild the mapping.
+        """
+        # Build lookups: origin_ip -> stream_info, multicast_addr -> stream_info
+        ip_to_stream: dict[str, tuple[str, dict]] = {}
+        mcast_to_stream: dict[str, tuple[str, dict]] = {}
+        for stream_name, info in self._aes67_streams.items():
+            if info.get("origin_ip"):
+                ip_to_stream[info["origin_ip"]] = (stream_name, info)
+            if info.get("multicast_addr"):
+                mcast_to_stream[info["multicast_addr"]] = (stream_name, info)
+
+        reconciled = 0
+        for dev_name, dev_data in result.items():
+            for sub in dev_data.get("subscriptions", []):
+                tx_dev = sub.get("tx_device_name", "")
+                tx_ch = sub.get("tx_channel_name", "")
+                rx_ch_name = sub.get("rx_channel_name", "")
+
+                # Match tx_device_name against AES67 stream origin/multicast IPs
+                match = ip_to_stream.get(tx_dev) or mcast_to_stream.get(tx_dev)
+                if not match:
+                    continue
+
+                stream_name, stream_info = match
+
+                # Find the RX channel number from its name
+                rx_num = None
+                for num, ch in dev_data.get("rx_channels", {}).items():
+                    if ch.get("name") == rx_ch_name:
+                        rx_num = num
+                        break
+                if rx_num is None:
+                    continue
+
+                # Skip if already set (runtime selection takes precedence)
+                key = (dev_name, rx_num)
+                if key in self._aes67_selections:
+                    continue
+
+                # Determine channel display name
+                ch_names = self._get_channel_names(stream_info)
+                ch_display = None
+                # Try matching tx_channel_name against known channel names
+                if tx_ch in ch_names:
+                    ch_display = tx_ch
+                else:
+                    # Try interpreting as 1-based index
+                    try:
+                        ch_idx = int(tx_ch) - 1
+                        if 0 <= ch_idx < len(ch_names):
+                            ch_display = ch_names[ch_idx]
+                    except (ValueError, IndexError):
+                        pass
+                if ch_display is None and ch_names:
+                    ch_display = ch_names[0]
+
+                display_str = f"[AES67] {stream_name} - {ch_display}"
+                self._aes67_selections[key] = display_str
+                reconciled += 1
+                LOGGER.debug(
+                    "Reconciled AES67 subscription: %s ch%d -> %s",
+                    dev_name, rx_num, display_str,
+                )
+
+        if reconciled:
+            LOGGER.warning(
+                "Reconciled %d AES67 subscription(s) from device state",
+                reconciled,
+            )

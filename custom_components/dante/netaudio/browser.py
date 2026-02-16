@@ -107,6 +107,11 @@ class DanteBrowser:
                     # Fallback: derive from service name
                     server_name = name.split(".")[0] if "." in name else name
 
+                # Normalize: strip trailing dot and .local suffix
+                server_name = server_name.rstrip(".")
+                if server_name.endswith(".local"):
+                    server_name = server_name[:-6]
+
                 service_data = {
                     "ipv4": ipv4,
                     "name": name,

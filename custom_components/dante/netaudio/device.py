@@ -262,9 +262,11 @@ class DanteDevice:
                 self.sockets[service["port"]] = sock
 
             for port in PORTS:
+                if port in self.sockets:
+                    continue
                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 sock.bind(("", 0))
-                sock.settimeout(0.01)
+                sock.settimeout(1)
                 sock.connect((str(self.ipv4), port))
                 self.sockets[port] = sock
         except Exception as e:
@@ -376,6 +378,9 @@ class DanteDevice:
         try:
             for page in range(0, max(int(self.rx_count / 16), 1)):
                 receivers = await self.dante_command(*self.command_receivers(page))
+                if not receivers:
+                    logger.warning("No response for RX channels page %d from %s", page, self.name)
+                    continue
                 hex_rx_response = receivers.hex()
 
                 for index in range(0, min(self.rx_count, 16)):
@@ -457,6 +462,9 @@ class DanteDevice:
                 response = await self.dante_command(
                     *self.command_transmitters(page, friendly_names=True)
                 )
+                if not response:
+                    logger.warning("No response for TX friendly names page %d from %s", page, self.name)
+                    continue
                 tx_friendly_names = response.hex()
 
                 for index in range(0, min(self.tx_count, 32)):
@@ -479,6 +487,9 @@ class DanteDevice:
                 response = await self.dante_command(
                     *self.command_transmitters(page, friendly_names=False)
                 )
+                if not response:
+                    logger.warning("No response for TX channels page %d from %s", page, self.name)
+                    continue
                 transmitters = response.hex()
 
                 has_disabled_channels = False
