@@ -19,7 +19,7 @@ from homeassistant.helpers.update_coordinator import (
 from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo
 
-from .const import DOMAIN, LOGGER, MDNS_TIMEOUT, SAP_MULTICAST, SAP_PORT, SAP_TIMEOUT, SCAN_INTERVAL
+from .const import DOMAIN, LOGGER, MDNS_TIMEOUT, DEVICE_MISS_LIMIT, SAP_MULTICAST, SAP_PORT, SAP_TIMEOUT, SCAN_INTERVAL
 from .netaudio.const import SERVICE_CMC, SERVICES
 from .netaudio.device import DanteDevice
 
@@ -39,20 +39,27 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._aes67_streams: dict[str, Any] = {}
         # Local AES67 selections keyed by (device_name, rx_channel_num)
         self._aes67_selections: dict[tuple[str, int], str] = {}
+        # Track consecutive missed discovery cycles per device
+        self._miss_count: dict[str, int] = {}
+        # Cache last-known device data for persistence across missed cycles
+        self._cached_data: dict[str, Any] = {}
+        # First poll flag — use longer timeout on startup
+        self._first_poll = True
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from the Dante network."""
         try:
+            LOGGER.debug("Dante poll starting (first=%s)", self._first_poll)
             aiozc = await zeroconf.async_get_async_instance(self.hass)
 
-            # Browse for services
+            # Browse for services — longer timeout on first poll (startup)
             found_services: list[tuple[str, str]] = []
 
             def on_state_change(
-                zeroconf: object,
                 service_type: str,
                 name: str,
                 state_change: ServiceStateChange,
+                **kwargs,
             ) -> None:
                 if state_change is ServiceStateChange.Added:
                     found_services.append((service_type, name))
@@ -63,8 +70,14 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 handlers=[on_state_change],
             )
 
-            await asyncio.sleep(MDNS_TIMEOUT)
+            if self._first_poll:
+                # Startup: wait longer for all devices to respond
+                await asyncio.sleep(MDNS_TIMEOUT * 3)
+                self._first_poll = False
+            else:
+                await asyncio.sleep(MDNS_TIMEOUT)
             await browser.async_cancel()
+            LOGGER.debug("Dante poll found %d services", len(found_services))
 
             # Resolve services and build device objects
             device_hosts: dict[str, dict] = {}
@@ -73,10 +86,12 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 try:
                     info = AsyncServiceInfo(service_type, name)
                     if not await info.async_request(aiozc.zeroconf, 3000):
+                        LOGGER.debug("Failed to resolve service: %s", name)
                         continue
 
                     addresses = info.parsed_addresses()
                     if not addresses:
+                        LOGGER.debug("No addresses for service: %s", name)
                         continue
 
                     ipv4 = addresses[0]
@@ -125,6 +140,11 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
                 except Exception as err:
                     LOGGER.debug("Error resolving %s: %s", name, err)
+
+            LOGGER.debug(
+                "Dante resolved %d device hosts: %s",
+                len(device_hosts), sorted(device_hosts.keys()),
+            )
 
             # Get controls for each device and build result
             result: dict[str, Any] = {}
@@ -197,9 +217,37 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 result[dev_name] = dev_data
                 self._devices[dev_name] = device
 
+            # Merge cached data for devices missed this cycle
+            found_names = set(result.keys())
+            for cached_name, cached_data in list(self._cached_data.items()):
+                if cached_name in found_names:
+                    # Device found — reset miss counter
+                    self._miss_count.pop(cached_name, None)
+                else:
+                    # Device missed — increment counter
+                    misses = self._miss_count.get(cached_name, 0) + 1
+                    self._miss_count[cached_name] = misses
+                    if misses <= DEVICE_MISS_LIMIT:
+                        LOGGER.debug(
+                            "Device %s missed cycle %d/%d, using cached data",
+                            cached_name, misses, DEVICE_MISS_LIMIT,
+                        )
+                        result[cached_name] = cached_data
+                    else:
+                        LOGGER.warning(
+                            "Device %s missed %d cycles, removing",
+                            cached_name, misses,
+                        )
+                        self._miss_count.pop(cached_name, None)
+                        self._cached_data.pop(cached_name, None)
+                        self._devices.pop(cached_name, None)
+
+            # Update cache with current results
+            self._cached_data.update(result)
+
             # Discover AES67/SAP streams
             bind_ip = self._find_bind_ip(result)
-            LOGGER.warning("SAP: bind_ip=%s from %d devices", bind_ip, len(result))
+            LOGGER.debug("SAP: bind_ip=%s from %d devices", bind_ip, len(result))
             if bind_ip:
                 try:
                     new_streams = await self.hass.async_add_executor_job(
@@ -209,16 +257,15 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     # periodic so we won't see all streams every poll cycle)
                     if new_streams:
                         self._aes67_streams.update(new_streams)
-                    LOGGER.warning(
-                        "SAP: found %d new, %d total AES67 streams: %s",
+                    LOGGER.debug(
+                        "SAP: found %d new, %d total AES67 streams",
                         len(new_streams),
                         len(self._aes67_streams),
-                        list(self._aes67_streams.keys()),
                     )
                 except Exception as err:
-                    LOGGER.warning("SAP discovery failed: %s", err)
+                    LOGGER.debug("SAP discovery failed: %s", err)
             else:
-                LOGGER.warning("No Dante device IPs found, skipping SAP discovery")
+                LOGGER.debug("No Dante device IPs found, skipping SAP discovery")
 
             # Reconcile AES67 subscriptions from device state + SAP streams
             if self._aes67_streams:
