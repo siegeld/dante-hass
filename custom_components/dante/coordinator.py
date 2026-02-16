@@ -25,7 +25,13 @@ from .netaudio.device import DanteDevice
 
 
 class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Coordinator to manage Dante device discovery and data."""
+    """Coordinator to manage Dante device discovery and data.
+
+    Architecture: mDNS is used ONLY for discovering new devices and updating
+    IPs. Once a device is known, it is queried directly by unicast UDP every
+    poll cycle. This avoids the fundamental unreliability of mDNS multicast
+    on busy networks.
+    """
 
     def __init__(self, hass: HomeAssistant) -> None:
         """Initialize the coordinator."""
@@ -39,10 +45,13 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._aes67_streams: dict[str, Any] = {}
         # Local AES67 selections keyed by (device_name, rx_channel_num)
         self._aes67_selections: dict[tuple[str, int], str] = {}
-        # Track consecutive missed discovery cycles per device
+        # Track consecutive failed direct-query cycles per device (keyed by server_name)
         self._miss_count: dict[str, int] = {}
-        # Cache last-known device data for persistence across missed cycles
+        # Cache last-known coordinator result data (keyed by dev_name)
         self._cached_data: dict[str, Any] = {}
+        # Registry of all known devices with connection info (keyed by server_name)
+        # Each entry: {ipv4, services, props, dev_name}
+        self._known_devices: dict[str, dict[str, Any]] = {}
         # Persistent mDNS browser state
         self._browser: AsyncServiceBrowser | None = None
         self._discovered_services: dict[str, str] = {}  # name -> service_type
@@ -85,31 +94,100 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._browser.async_cancel()
             self._browser = None
 
+    def _build_device_data(
+        self, device: DanteDevice, server_name: str
+    ) -> dict[str, Any]:
+        """Build the coordinator result dict for a single device."""
+        dev_name = device.name or server_name
+        dev_data: dict[str, Any] = {
+            "server_name": server_name,
+            "name": dev_name,
+            "ipv4": str(device.ipv4) if device.ipv4 else None,
+            "mac_address": getattr(device, "mac_address", None),
+            "manufacturer": getattr(device, "manufacturer", None),
+            "model": getattr(device, "model", None),
+            "model_id": getattr(device, "model_id", None),
+            "software": getattr(device, "software", None),
+            "sample_rate": getattr(device, "sample_rate", None),
+            "latency": getattr(device, "latency", None),
+            "rx_count": getattr(device, "rx_count", 0) or 0,
+            "tx_count": getattr(device, "tx_count", 0) or 0,
+            "rx_channels": {},
+            "tx_channels": {},
+            "subscriptions": [],
+        }
+
+        if device.rx_channels:
+            for num, ch in device.rx_channels.items():
+                dev_data["rx_channels"][num] = {
+                    "name": ch.name,
+                    "number": ch.number,
+                }
+
+        if device.tx_channels:
+            for num, ch in device.tx_channels.items():
+                dev_data["tx_channels"][num] = {
+                    "name": ch.name,
+                    "number": ch.number,
+                }
+
+        if device.subscriptions:
+            for sub in device.subscriptions:
+                dev_data["subscriptions"].append(
+                    {
+                        "rx_channel_name": getattr(
+                            sub, "rx_channel_name", None
+                        ),
+                        "tx_channel_name": getattr(
+                            sub, "tx_channel_name", None
+                        ),
+                        "tx_device_name": getattr(
+                            sub, "tx_device_name", None
+                        ),
+                        "status_code": getattr(sub, "status_code", None),
+                    }
+                )
+
+        return dev_data
+
+    def _resolve_server_name(self, info: AsyncServiceInfo, fallback_name: str) -> str:
+        """Normalize a server name from mDNS info."""
+        server_name = info.server or fallback_name.split(".")[0]
+        server_name = server_name.rstrip(".")
+        if server_name.endswith(".local"):
+            server_name = server_name[:-6]
+        return server_name
+
     async def _async_update_data(self) -> dict[str, Any]:
-        """Fetch data from the Dante network."""
+        """Fetch data from the Dante network.
+
+        Three-phase approach:
+        1. Resolve mDNS services to discover NEW devices and update IPs
+        2. Merge mDNS results into the known-devices registry
+        3. Query ALL known devices directly by IP (unicast UDP)
+
+        This ensures known devices are never lost due to mDNS unreliability.
+        A device is only removed after DEVICE_MISS_LIMIT consecutive direct
+        query failures.
+        """
         try:
             # Wait for browser to be ready (only blocks on first poll)
             await asyncio.wait_for(self._browser_ready.wait(), timeout=MDNS_TIMEOUT * 4)
 
             aiozc = await zeroconf.async_get_async_instance(self.hass)
 
-            # Snapshot current discovered services from the persistent browser
+            # --- PHASE 1: Resolve mDNS for new devices / IP updates ---
             found_services = list(self._discovered_services.items())
-            LOGGER.debug("Dante poll: %d services from persistent browser", len(found_services))
-
-            # Resolve services and build device objects
-            device_hosts: dict[str, dict] = {}
+            mdns_hosts: dict[str, dict] = {}
 
             for name, service_type in found_services:
                 try:
                     info = AsyncServiceInfo(service_type, name)
                     if not await info.async_request(aiozc.zeroconf, 3000):
-                        LOGGER.debug("Failed to resolve service: %s", name)
                         continue
 
                     addresses = info.parsed_addresses()
                     if not addresses:
-                        LOGGER.debug("No addresses for service: %s", name)
                         continue
 
                     ipv4 = addresses[0]
@@ -119,146 +197,138 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         v = v.decode("utf-8") if isinstance(v, bytes) else v
                         props[k] = v
 
-                    server_name = info.server or name.split(".")[0]
-                    # Normalize: strip trailing dot and .local suffix
-                    server_name = server_name.rstrip(".")
-                    if server_name.endswith(".local"):
-                        server_name = server_name[:-6]
+                    server_name = self._resolve_server_name(info, name)
 
-                    if server_name not in device_hosts:
-                        device_hosts[server_name] = {
-                            "device": DanteDevice(server_name=server_name),
+                    if server_name not in mdns_hosts:
+                        mdns_hosts[server_name] = {
+                            "ipv4": ipv4,
                             "services": {},
+                            "props": {},
                         }
 
-                    device = device_hosts[server_name]["device"]
-                    service_data = {
+                    mdns_hosts[server_name]["ipv4"] = ipv4
+                    mdns_hosts[server_name]["services"][name] = {
                         "type": service_type,
                         "port": info.port,
                         "properties": props,
                     }
-                    device_hosts[server_name]["services"][name] = service_data
-                    device.services[name] = service_data
-
-                    if not device.ipv4:
-                        device.ipv4 = ipv4
-                    if "id" in props and SERVICE_CMC in service_type:
-                        device.mac_address = props["id"]
-                    if "model" in props:
-                        device.model_id = props["model"]
-                    if "rate" in props:
-                        device.sample_rate = int(props["rate"])
-                    if "latency_ns" in props:
-                        device.latency = int(props["latency_ns"])
-                    if (
-                        "router_info" in props
-                        and props["router_info"] == '"Dante Via"'
-                    ):
-                        device.software = "Dante Via"
+                    mdns_hosts[server_name]["props"].update(props)
 
                 except Exception as err:
                     LOGGER.debug("Error resolving %s: %s", name, err)
 
+            # --- PHASE 2: Merge mDNS into known-devices registry ---
+            for server_name, mdns_info in mdns_hosts.items():
+                if server_name not in self._known_devices:
+                    LOGGER.info(
+                        "New Dante device discovered: %s at %s",
+                        server_name, mdns_info["ipv4"],
+                    )
+                    self._known_devices[server_name] = {
+                        "ipv4": mdns_info["ipv4"],
+                        "services": dict(mdns_info["services"]),
+                        "props": dict(mdns_info["props"]),
+                    }
+                else:
+                    existing = self._known_devices[server_name]
+                    old_ip = existing.get("ipv4")
+                    new_ip = mdns_info["ipv4"]
+                    if old_ip != new_ip:
+                        LOGGER.info(
+                            "Device %s IP changed: %s -> %s",
+                            server_name, old_ip, new_ip,
+                        )
+                    existing["ipv4"] = new_ip
+                    existing.setdefault("services", {}).update(mdns_info["services"])
+                    existing.setdefault("props", {}).update(mdns_info["props"])
+
             LOGGER.debug(
-                "Dante resolved %d device hosts: %s",
-                len(device_hosts), sorted(device_hosts.keys()),
+                "Dante poll: %d from mDNS, %d known devices total",
+                len(mdns_hosts), len(self._known_devices),
             )
 
-            # Get controls for each device and build result
+            # --- PHASE 3: Query ALL known devices by direct unicast ---
             result: dict[str, Any] = {}
 
-            for server_name, host_data in device_hosts.items():
-                device = host_data["device"]
+            for server_name, known_info in list(self._known_devices.items()):
+                device = DanteDevice(server_name=server_name)
+                device.ipv4 = known_info["ipv4"]
 
+                # Attach cached mDNS services so device opens proper sockets
+                for svc_name, svc_data in known_info.get("services", {}).items():
+                    device.services[svc_name] = svc_data
+
+                # Apply cached mDNS properties
+                props = known_info.get("props", {})
+                if "id" in props:
+                    device.mac_address = props["id"]
+                if "model" in props:
+                    device.model_id = props["model"]
+                if "rate" in props:
+                    try:
+                        device.sample_rate = int(props["rate"])
+                    except (ValueError, TypeError):
+                        pass
+                if "latency_ns" in props:
+                    try:
+                        device.latency = int(props["latency_ns"])
+                    except (ValueError, TypeError):
+                        pass
+                if (
+                    "router_info" in props
+                    and props["router_info"] == '"Dante Via"'
+                ):
+                    device.software = "Dante Via"
+
+                # Direct unicast query
+                query_ok = False
                 try:
                     await self.hass.async_add_executor_job(
                         lambda d=device: asyncio.run(d.get_controls())
                     )
+                    query_ok = True
                 except Exception as err:
-                    LOGGER.warning(
-                        "Failed to get controls for %s: %s",
-                        device.name or server_name,
-                        err,
+                    LOGGER.debug(
+                        "Direct query failed for %s (%s): %s",
+                        server_name, known_info["ipv4"], err,
                     )
 
-                dev_name = device.name or server_name
+                # Check if we got meaningful data back
+                has_data = query_ok and (
+                    device.name or device.rx_channels or device.tx_channels
+                )
 
-                dev_data: dict[str, Any] = {
-                    "server_name": server_name,
-                    "name": dev_name,
-                    "ipv4": str(device.ipv4) if device.ipv4 else None,
-                    "mac_address": getattr(device, "mac_address", None),
-                    "manufacturer": getattr(device, "manufacturer", None),
-                    "model": getattr(device, "model", None),
-                    "model_id": getattr(device, "model_id", None),
-                    "software": getattr(device, "software", None),
-                    "sample_rate": getattr(device, "sample_rate", None),
-                    "latency": getattr(device, "latency", None),
-                    "rx_count": getattr(device, "rx_count", 0) or 0,
-                    "tx_count": getattr(device, "tx_count", 0) or 0,
-                    "rx_channels": {},
-                    "tx_channels": {},
-                    "subscriptions": [],
-                }
-
-                if device.rx_channels:
-                    for num, ch in device.rx_channels.items():
-                        dev_data["rx_channels"][num] = {
-                            "name": ch.name,
-                            "number": ch.number,
-                        }
-
-                if device.tx_channels:
-                    for num, ch in device.tx_channels.items():
-                        dev_data["tx_channels"][num] = {
-                            "name": ch.name,
-                            "number": ch.number,
-                        }
-
-                if device.subscriptions:
-                    for sub in device.subscriptions:
-                        dev_data["subscriptions"].append(
-                            {
-                                "rx_channel_name": getattr(
-                                    sub, "rx_channel_name", None
-                                ),
-                                "tx_channel_name": getattr(
-                                    sub, "tx_channel_name", None
-                                ),
-                                "tx_device_name": getattr(
-                                    sub, "tx_device_name", None
-                                ),
-                                "status_code": getattr(sub, "status_code", None),
-                            }
-                        )
-
-                result[dev_name] = dev_data
-                self._devices[dev_name] = device
-
-            # Merge cached data for devices missed this cycle
-            found_names = set(result.keys())
-            for cached_name, cached_data in list(self._cached_data.items()):
-                if cached_name in found_names:
-                    # Device found — reset miss counter
-                    self._miss_count.pop(cached_name, None)
+                if has_data:
+                    # Device is alive — build fresh data
+                    self._miss_count.pop(server_name, None)
+                    dev_name = device.name or server_name
+                    dev_data = self._build_device_data(device, server_name)
+                    result[dev_name] = dev_data
+                    self._devices[dev_name] = device
+                    # Remember the dev_name mapping for cache lookups
+                    known_info["dev_name"] = dev_name
                 else:
-                    # Device missed — increment counter
-                    misses = self._miss_count.get(cached_name, 0) + 1
-                    self._miss_count[cached_name] = misses
+                    # Device unreachable — use cached data with miss tracking
+                    misses = self._miss_count.get(server_name, 0) + 1
+                    self._miss_count[server_name] = misses
+                    dev_name = known_info.get("dev_name", server_name)
+
                     if misses <= DEVICE_MISS_LIMIT:
                         LOGGER.debug(
-                            "Device %s missed cycle %d/%d, using cached data",
-                            cached_name, misses, DEVICE_MISS_LIMIT,
+                            "Device %s unreachable (%d/%d), using cached data",
+                            server_name, misses, DEVICE_MISS_LIMIT,
                         )
-                        result[cached_name] = cached_data
+                        if dev_name in self._cached_data:
+                            result[dev_name] = self._cached_data[dev_name]
                     else:
                         LOGGER.warning(
-                            "Device %s missed %d cycles, removing",
-                            cached_name, misses,
+                            "Device %s unreachable for %d consecutive cycles, removing",
+                            server_name, misses,
                         )
-                        self._miss_count.pop(cached_name, None)
-                        self._cached_data.pop(cached_name, None)
-                        self._devices.pop(cached_name, None)
+                        self._miss_count.pop(server_name, None)
+                        self._known_devices.pop(server_name, None)
+                        self._cached_data.pop(dev_name, None)
+                        self._devices.pop(dev_name, None)
 
             # Update cache with current results
             self._cached_data.update(result)
