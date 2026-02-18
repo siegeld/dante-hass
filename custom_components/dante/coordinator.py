@@ -301,12 +301,13 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if has_data:
                     # Device is alive — build fresh data
                     self._miss_count.pop(server_name, None)
-                    dev_name = device.name or server_name
+                    dev_name = device.name or known_info.get("dev_name") or server_name
+                    # Cache the resolved dev_name so failed queries reuse it
+                    if device.name:
+                        known_info["dev_name"] = device.name
                     dev_data = self._build_device_data(device, server_name)
                     result[dev_name] = dev_data
                     self._devices[dev_name] = device
-                    # Remember the dev_name mapping for cache lookups
-                    known_info["dev_name"] = dev_name
                 else:
                     # Device unreachable — use cached data with miss tracking
                     misses = self._miss_count.get(server_name, 0) + 1

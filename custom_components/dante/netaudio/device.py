@@ -279,7 +279,7 @@ class DanteDevice:
                 response = await self.dante_command(*self.command_device_name())
 
                 if response:
-                    self.name = response[10:-1].decode("ascii")
+                    self.name = response[10:-1].split(b"\x00")[0].decode("ascii")
                 else:
                     logger.warning("Failed to get Dante device name")
 
