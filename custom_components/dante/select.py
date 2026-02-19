@@ -164,6 +164,7 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
             f"{DOMAIN}_{device_name}_rx_{rx_channel_num}_subscription"
         )
         self._attr_name = f"RX {rx_channel_num} ({rx_channel_name})"
+        self._pending_option: str | None = None
 
     @property
     def options(self) -> list[str]:
@@ -175,6 +176,10 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
     @property
     def current_option(self) -> str | None:
         """Return the current subscription source for this RX channel."""
+        # Check for pending optimistic selection first
+        if self._pending_option is not None:
+            return self._pending_option
+
         # Check for local AES67 selection first
         key = (self._device_name, self._rx_channel_num)
         aes67_sel = self.coordinator._aes67_selections.get(key)
@@ -192,6 +197,11 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
                 if tx_dev and tx_ch:
                     return f"{tx_dev} - {tx_ch}"
         return SUBSCRIPTION_NONE
+
+    def _handle_coordinator_update(self) -> None:
+        """Clear pending option when coordinator refreshes with real data."""
+        self._pending_option = None
+        super()._handle_coordinator_update()
 
     async def async_select_option(self, option: str) -> None:
         """Set the subscription for this RX channel."""
@@ -214,6 +224,8 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
             self.coordinator._aes67_selections.pop(key, None)
             try:
                 await device.remove_subscription(rx_ch)
+                self._pending_option = SUBSCRIPTION_NONE
+                self.async_write_ha_state()
                 await self.coordinator.async_request_refresh()
             except Exception as err:
                 LOGGER.error(
@@ -298,6 +310,10 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
 
         try:
             await device.add_subscription(rx_ch, tx_ch, tx_device)
+            # Optimistically update state immediately (don't block on refresh)
+            self._pending_option = option
+            self.async_write_ha_state()
+            # Background refresh for eventual consistency
             await self.coordinator.async_request_refresh()
         except Exception as err:
             LOGGER.error(
