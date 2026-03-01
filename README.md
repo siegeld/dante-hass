@@ -4,7 +4,7 @@ A custom component that discovers and controls [Dante](https://www.audinate.com/
 
 ## Features
 
-- **Automatic device discovery** via mDNS/Zeroconf (no manual IP configuration)
+- **Automatic device discovery** via mDNS/Zeroconf with resilient unicast polling (mDNS discovers new devices; once known, devices are queried directly by IP every poll cycle so they're never lost due to mDNS unreliability)
 - **Audio subscription routing** -- route any TX channel to any RX channel across devices using Select entities
 - **AES67/SAP stream discovery** -- automatically discovers AES67 multicast streams via SAP (Session Announcement Protocol) and presents them as selectable sources in RX subscription dropdowns
 - **AES67 subscription routing** -- subscribe Dante RX channels to AES67 multicast flows (e.g. Crestron NAX streams) directly from the HA UI, no Dante Controller required
