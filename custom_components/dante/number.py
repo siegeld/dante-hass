@@ -25,7 +25,8 @@ async def async_setup_entry(
 ) -> None:
     """Set up Dante number entities."""
     coordinator: DanteDataUpdateCoordinator = entry.runtime_data
-    known_devices: set[str] = set()
+    platform = "number"
+    coordinator.setdefault_known_devices(platform)
 
     def _add_new_devices() -> None:
         """Add entities for any newly discovered devices."""
@@ -33,8 +34,8 @@ async def async_setup_entry(
             return
         new_entities: list[NumberEntity] = []
         for device_name, dev_data in coordinator.data.items():
-            if device_name not in known_devices:
-                known_devices.add(device_name)
+            if device_name not in coordinator._platform_known_devices[platform]:
+                coordinator._platform_known_devices[platform].add(device_name)
                 new_entities.append(
                     DanteLatencyNumber(coordinator, device_name)
                 )
@@ -62,7 +63,7 @@ async def async_setup_entry(
                             )
                         )
         if new_entities:
-            async_add_entities(new_entities)
+            async_add_entities(new_entities, update_before_add=True)
 
     _add_new_devices()
     entry.async_on_unload(coordinator.async_add_listener(lambda: _add_new_devices()))

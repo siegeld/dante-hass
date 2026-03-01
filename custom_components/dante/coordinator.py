@@ -56,6 +56,12 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._browser: AsyncServiceBrowser | None = None
         self._discovered_services: dict[str, str] = {}  # name -> service_type
         self._browser_ready = asyncio.Event()
+        # Per-platform known-devices tracking (survives coordinator refreshes)
+        self._platform_known_devices: dict[str, set[str]] = {}
+
+    def setdefault_known_devices(self, platform: str) -> None:
+        """Ensure a known-devices set exists for a platform."""
+        self._platform_known_devices.setdefault(platform, set())
 
     def _on_service_state_change(
         self,
