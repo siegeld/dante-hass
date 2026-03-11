@@ -249,6 +249,11 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
                 LOGGER.error("No IP for device %s", self._device_name)
                 return
 
+            # Optimistic update — reflect the new source in HA state immediately
+            # before the blocking UDP subscribe call.
+            self._pending_option = option
+            self.async_write_ha_state()
+
             try:
                 success = await self.hass.async_add_executor_job(
                     self.coordinator._send_aes67_subscribe,
@@ -259,7 +264,6 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
                 )
                 if success:
                     self.coordinator._aes67_selections[key] = option
-                    self.async_write_ha_state()
                     LOGGER.warning(
                         "AES67 subscribed %s ch %d -> %s (flow ch %d)",
                         self._device_name,
@@ -268,6 +272,8 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
                         flow_channel,
                     )
                 else:
+                    self._pending_option = None
+                    self.async_write_ha_state()
                     LOGGER.error(
                         "AES67 subscribe failed for %s ch %d -> %s",
                         self._device_name,
@@ -275,6 +281,8 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
                         option,
                     )
             except Exception as err:
+                self._pending_option = None
+                self.async_write_ha_state()
                 LOGGER.error(
                     "AES67 subscribe error for %s ch %d: %s",
                     self._device_name,
