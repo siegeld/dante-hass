@@ -32,6 +32,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, entry: ConfigEntry, device_entry
+) -> bool:
+    """Allow removal of orphaned devices."""
+    return True
+
+
 def _get_coordinator(hass: HomeAssistant) -> DanteDataUpdateCoordinator | None:
     """Get the coordinator from the first config entry."""
     entries = hass.config_entries.async_entries(DOMAIN)

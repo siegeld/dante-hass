@@ -35,8 +35,12 @@ class DanteEntity(CoordinatorEntity[DanteDataUpdateCoordinator]):
         data = self.device_data
         if not data:
             return None
+        # Use server_name as the sole stable identifier.
+        # The mac_address from mDNS varies in format between service types
+        # (_netaudio-cmc vs _netaudio-arc) causing duplicate devices and
+        # device registry churn that blocks the UI.
         return DeviceInfo(
-            identifiers={(DOMAIN, data.get("mac_address") or data["server_name"])},
+            identifiers={(DOMAIN, data["server_name"])},
             name=data["name"],
             manufacturer=data.get("manufacturer"),
             model=data.get("model"),
