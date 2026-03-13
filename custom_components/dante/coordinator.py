@@ -157,12 +157,15 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return dev_data
 
     def _resolve_server_name(self, info: AsyncServiceInfo, fallback_name: str) -> str:
-        """Normalize a server name from mDNS info."""
-        server_name = info.server or fallback_name.split(".")[0]
-        server_name = server_name.rstrip(".")
-        if server_name.endswith(".local"):
-            server_name = server_name[:-6]
-        return server_name
+        """Extract the Dante device name from the mDNS service name.
+
+        Always uses the service name prefix (the Dante device name set in
+        Dante Controller) rather than info.server (hardware hostname).
+        Dante device names are guaranteed unique on the network and are
+        what users expect to see. Hardware hostnames can be generic or
+        short (e.g. "2") which caused device merges in the HA registry.
+        """
+        return fallback_name.split(".")[0]
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from the Dante network.

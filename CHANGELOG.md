@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-03-13
+
+### Fixed
+- Fix device merge bug — use Dante device name (from mDNS service name) as device identifier instead of hardware hostname, which could be generic/short and cause multiple devices to merge into one HA device entry
+
 ## 2026-03-01
 
 ### Fixed
