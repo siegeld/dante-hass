@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- File-descriptor leak from `DanteChannel.device = self` back-reference creating a refcount cycle (`DanteDevice → rx/tx_channels → DanteChannel → DanteDevice`). Each 30s poll built a fresh `DanteDevice` with ~5 UDP sockets per device that could not be reclaimed until Python's tracing GC ran, accumulating ~77 sockets/min under typical load. Removed the unused back-reference (no callers read it).
+
 ## [0.2.0] - 2026-02-15
 
 ### Added

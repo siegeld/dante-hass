@@ -423,7 +423,6 @@ class DanteDevice:
                         rx_channel = DanteChannel()
 
                         rx_channel.channel_type = "rx"
-                        rx_channel.device = self
                         rx_channel.name = rx_channel_name
                         rx_channel.number = channel_number
                         rx_channel.status_code = rx_channel_status_code
@@ -534,7 +533,6 @@ class DanteDevice:
                         tx_channel = DanteChannel()
                         tx_channel.channel_type = "tx"
                         tx_channel.number = channel_number
-                        tx_channel.device = self
                         tx_channel.name = tx_channel_name
 
                         if channel_number in tx_friendly_channel_names:
