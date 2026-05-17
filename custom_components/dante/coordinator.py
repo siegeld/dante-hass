@@ -3,11 +3,17 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+import re
 import select as sel
 import socket
 import struct
 import time
 from typing import Any
+
+# Matches per-channel virtual sub-device mDNS names like "01@danterbr11-villa-tascom"
+# or "32@danterbr7-theater-mixer". These are Dante channel announcements, not
+# real devices, and never respond to unicast control queries.
+_SUBCHANNEL_NAME_RE = re.compile(r"^\d+@")
 
 from homeassistant.components import zeroconf
 from homeassistant.core import HomeAssistant
@@ -190,6 +196,13 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             mdns_hosts: dict[str, dict] = {}
 
             for name, service_type in found_services:
+                # Skip per-channel virtual sub-device announcements (e.g.
+                # "01@danterbr11-villa-tascom"). These are mDNS-only artifacts
+                # that never respond to unicast Dante control queries — adding
+                # them just churns the known-devices registry and spams the
+                # log with "unreachable" warnings every DEVICE_MISS_LIMIT cycles.
+                if _SUBCHANNEL_NAME_RE.match(name):
+                    continue
                 try:
                     info = AsyncServiceInfo(service_type, name)
                     if not await info.async_request(aiozc.zeroconf, 3000):

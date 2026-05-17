@@ -170,23 +170,10 @@ class DanteDevice:
         return response
 
     def get_service(self, service_type):
-        service = None
-
-        try:
-            service = next(
-                filter(
-                    lambda x: x
-                    and x[1]
-                    and "type" in x[1]
-                    and x[1]["type"] == service_type,
-                    self.services.items(),
-                )
-            )[1]
-        except Exception as e:
-            logger.warning(f"Failed to get a service by type. {e}")
-            self.error = e
-
-        return service
+        for entry in self.services.values():
+            if entry and entry.get("type") == service_type:
+                return entry
+        return None
 
     #  @on("init")
     #  def event_handler(self, *args, **kwargs):
@@ -281,7 +268,7 @@ class DanteDevice:
                 if response:
                     self.name = response[10:-1].split(b"\x00")[0].decode("ascii")
                 else:
-                    logger.warning("Failed to get Dante device name")
+                    logger.debug("Failed to get Dante device name")
 
             # get reported rx/tx channel counts
             if not self.rx_count or not self.tx_count:
@@ -294,7 +281,7 @@ class DanteDevice:
                         channel_count[13:14], "big"
                     )
                 else:
-                    logger.warning("Failed to get Dante channel counts")
+                    logger.debug("Failed to get Dante channel counts")
 
             # get tx channels
             if not self.tx_channels and self.tx_count:
@@ -379,7 +366,7 @@ class DanteDevice:
             for page in range(0, max(int(self.rx_count / 16), 1)):
                 receivers = await self.dante_command(*self.command_receivers(page))
                 if not receivers:
-                    logger.warning("No response for RX channels page %d from %s", page, self.name)
+                    logger.debug("No response for RX channels page %d from %s", page, self.name)
                     continue
                 hex_rx_response = receivers.hex()
 
@@ -462,7 +449,7 @@ class DanteDevice:
                     *self.command_transmitters(page, friendly_names=True)
                 )
                 if not response:
-                    logger.warning("No response for TX friendly names page %d from %s", page, self.name)
+                    logger.debug("No response for TX friendly names page %d from %s", page, self.name)
                     continue
                 tx_friendly_names = response.hex()
 
@@ -487,7 +474,7 @@ class DanteDevice:
                     *self.command_transmitters(page, friendly_names=False)
                 )
                 if not response:
-                    logger.warning("No response for TX channels page %d from %s", page, self.name)
+                    logger.debug("No response for TX channels page %d from %s", page, self.name)
                     continue
                 transmitters = response.hex()
 

@@ -4,6 +4,8 @@
 
 ### Fixed
 - File-descriptor leak from `DanteChannel.device = self` back-reference creating a refcount cycle (`DanteDevice → rx/tx_channels → DanteChannel → DanteDevice`). Each 30s poll built a fresh `DanteDevice` with ~5 UDP sockets per device that could not be reclaimed until Python's tracing GC ran, accumulating ~77 sockets/min under typical load. Removed the unused back-reference (no callers read it).
+- Log spam reduction: warnings that fire for every poll cycle of every Dante channel sub-device are now DEBUG. `get_service` no longer logs a warning + sets `self.error` when a service type is legitimately absent from a device's mDNS announcements (it now just returns `None`). `Failed to get Dante device name`, `Failed to get Dante channel counts`, and `No response for RX/TX channels page` are demoted from WARNING to DEBUG.
+- Per-channel virtual sub-device mDNS names matching `^\d+@` (e.g. `01@danterbr11-villa-tascom`) are now skipped at mDNS resolution. These are Dante channel announcements, never respond to unicast control queries, and were churning the known-devices registry and emitting `Device X unreachable for 11 consecutive cycles, removing` every ~5 minutes per channel.
 
 ## [0.2.0] - 2026-02-15
 
