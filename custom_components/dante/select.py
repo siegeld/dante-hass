@@ -196,7 +196,19 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
                 tx_dev = sub.get("tx_device_name")
                 tx_ch = sub.get("tx_channel_name")
                 if tx_dev and tx_ch:
-                    return f"{tx_dev} - {tx_ch}"
+                    option = f"{tx_dev} - {tx_ch}"
+                    if option in self.options:
+                        return option
+                    tx_dev_data = (
+                        self.coordinator.data.get(tx_dev) if self.coordinator.data else None
+                    )
+                    if tx_dev_data:
+                        for _num, ch_data in tx_dev_data.get("tx_channels", {}).items():
+                            if ch_data.get("friendly_name") == tx_ch:
+                                return f"{tx_dev} - {ch_data['name']}"
+                            if ch_data.get("name") == tx_ch:
+                                return option
+                    return option
         return SUBSCRIPTION_NONE
 
     def _handle_coordinator_update(self) -> None:
