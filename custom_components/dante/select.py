@@ -95,7 +95,7 @@ class DanteSampleRateSelect(DanteEntity, SelectEntity):
 
         try:
             await device.set_sample_rate(rate)
-            await self.coordinator.async_request_refresh()
+            self.hass.async_create_task(self.coordinator.async_request_refresh())
         except Exception as err:
             LOGGER.error(
                 "Failed to set sample rate on %s: %s", self._device_name, err
@@ -138,7 +138,7 @@ class DanteEncodingSelect(DanteEntity, SelectEntity):
 
         try:
             await device.set_encoding(encoding)
-            await self.coordinator.async_request_refresh()
+            self.hass.async_create_task(self.coordinator.async_request_refresh())
         except Exception as err:
             LOGGER.error(
                 "Failed to set encoding on %s: %s", self._device_name, err
@@ -227,7 +227,7 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
                 await device.remove_subscription(rx_ch)
                 self._pending_option = SUBSCRIPTION_NONE
                 self.async_write_ha_state()
-                await self.coordinator.async_request_refresh()
+                self.hass.async_create_task(self.coordinator.async_request_refresh())
             except Exception as err:
                 LOGGER.error(
                     "Failed to remove subscription on %s ch %s: %s",
@@ -323,7 +323,7 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
             self._pending_option = option
             self.async_write_ha_state()
             # Background refresh for eventual consistency
-            await self.coordinator.async_request_refresh()
+            self.hass.async_create_task(self.coordinator.async_request_refresh())
         except Exception as err:
             LOGGER.error(
                 "Failed to add subscription on %s ch %s: %s",
