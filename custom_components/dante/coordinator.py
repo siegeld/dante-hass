@@ -272,6 +272,25 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # --- PHASE 3: Query ALL known devices by direct unicast ---
             result: dict[str, Any] = {}
 
+            # Determine local IP on the Dante subnet for socket binding.
+            # On multi-NIC hosts binding to 0.0.0.0 may route replies
+            # through the wrong interface, causing timeouts.
+            _bind_ip = None
+            for _ki in self._known_devices.values():
+                _dev_ip = _ki.get("ipv4")
+                if not _dev_ip:
+                    continue
+                try:
+                    _s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    _s.connect((_dev_ip, 1))
+                    _bind_ip = _s.getsockname()[0]
+                    _s.close()
+                    break
+                except Exception:
+                    continue
+            if _bind_ip:
+                LOGGER.debug("Unicast bind IP: %s", _bind_ip)
+
             for server_name, known_info in list(self._known_devices.items()):
                 device = DanteDevice(server_name=server_name)
                 device.ipv4 = known_info["ipv4"]
@@ -306,7 +325,7 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 query_ok = False
                 try:
                     await self.hass.async_add_executor_job(
-                        lambda d=device: asyncio.run(d.get_controls())
+                        lambda d=device, ip=_bind_ip: asyncio.run(d.get_controls(bind_ip=ip))
                     )
                     query_ok = True
                 except Exception as err:

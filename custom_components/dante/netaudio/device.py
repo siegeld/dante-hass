@@ -236,14 +236,14 @@ class DanteDevice:
     #          mac=mac,
     #      )
 
-    async def get_controls(self):
+    async def get_controls(self, bind_ip=None):
         try:
             for _, service in self.services.items():
                 if service["type"] == SERVICE_CHAN:
                     continue
 
                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sock.bind(("", 0))
+                sock.bind((bind_ip or "", 0))
                 sock.settimeout(1)
                 sock.connect((str(self.ipv4), service["port"]))
                 self.sockets[service["port"]] = sock
@@ -252,7 +252,7 @@ class DanteDevice:
                 if port in self.sockets:
                     continue
                 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sock.bind(("", 0))
+                sock.bind((bind_ip or "", 0))
                 sock.settimeout(1)
                 sock.connect((str(self.ipv4), port))
                 self.sockets[port] = sock
