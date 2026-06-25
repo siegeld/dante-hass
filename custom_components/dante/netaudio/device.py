@@ -137,9 +137,25 @@ class DanteDevice:
         return response
 
     async def add_subscription(self, rx_channel, tx_channel, tx_device):
+        return await self.add_subscription_by_name(
+            rx_channel, tx_channel.name, tx_device.name
+        )
+
+    async def add_subscription_by_name(
+        self, rx_channel, tx_channel_name, tx_device_name
+    ):
+        """Add a subscription using literal TX device/channel names.
+
+        The Dante subscribe command is built purely from the RX channel number
+        and the TX device/channel name strings (see command_add_subscription),
+        so the TX source does not need to be a live, polled device object — only
+        the receiver (this device) must be reachable. This lets routing succeed
+        even when a transmitter is briefly unreachable over the control protocol
+        while still transmitting on the Dante network.
+        """
         response = await self.dante_command(
             *self.command_add_subscription(
-                rx_channel.number, tx_channel.name, tx_device.name
+                rx_channel.number, tx_channel_name, tx_device_name
             )
         )
 

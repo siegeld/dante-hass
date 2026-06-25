@@ -36,6 +36,17 @@ add_subscription:
           min: 1
           max: 64
           mode: box
+    tx_channel_name:
+      name: TX Channel Name
+      description: >-
+        Optional. TX channel name to route by directly. Lets you route to a
+        transmitter that is not currently reachable/cataloged (the subscribe
+        command is name-based). If omitted, the name is resolved from the live
+        device or the persistent catalog using tx_channel.
+      required: false
+      example: "01"
+      selector:
+        text:
 
 remove_subscription:
   name: Remove Subscription

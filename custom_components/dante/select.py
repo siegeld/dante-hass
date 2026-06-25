@@ -299,26 +299,16 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
             return
 
         tx_device_name, tx_channel_name = option.split(" - ", 1)
-        tx_device = self.coordinator.get_device(tx_device_name)
-        if not tx_device:
-            LOGGER.error("TX device not found: %s", tx_device_name)
-            return
 
-        tx_ch = None
-        if tx_device.tx_channels:
-            for ch in tx_device.tx_channels.values():
-                if ch.name == tx_channel_name:
-                    tx_ch = ch
-                    break
-
-        if not tx_ch:
-            LOGGER.error(
-                "TX channel %s not found on %s", tx_channel_name, tx_device_name
-            )
-            return
-
+        # Route by name. The Dante subscribe command only needs the RX channel
+        # number plus the TX device/channel name strings, so we deliberately do
+        # NOT require the TX source to be live in the coordinator — it may be
+        # briefly unreachable over control while still transmitting on the
+        # network. Only the receiver (this device) must be reachable.
         try:
-            await device.add_subscription(rx_ch, tx_ch, tx_device)
+            await device.add_subscription_by_name(
+                rx_ch, tx_channel_name, tx_device_name
+            )
             # Optimistically update state immediately (don't block on refresh)
             self._pending_option = option
             self.async_write_ha_state()

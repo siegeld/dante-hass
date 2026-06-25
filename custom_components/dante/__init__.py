@@ -56,32 +56,53 @@ def _register_services(hass: HomeAssistant) -> None:
         rx_channel_num = call.data["rx_channel"]
         tx_device_name = call.data["tx_device"]
         tx_channel_num = call.data["tx_channel"]
+        tx_channel_name = call.data.get("tx_channel_name")
 
         coordinator = _get_coordinator(hass)
         if not coordinator:
             LOGGER.error("No Dante coordinator available")
             return
 
+        # Only the receiver must be live — the subscribe command is name-based.
         rx_device = coordinator.get_device(rx_device_name)
-        tx_device = coordinator.get_device(tx_device_name)
-
-        if not rx_device or not tx_device:
-            LOGGER.error(
-                "Device not found: rx=%s tx=%s", rx_device_name, tx_device_name
-            )
+        if not rx_device:
+            LOGGER.error("RX device not found: %s", rx_device_name)
             return
 
         rx_ch = rx_device.rx_channels.get(rx_channel_num)
-        tx_ch = tx_device.tx_channels.get(tx_channel_num)
-
-        if not rx_ch or not tx_ch:
+        if not rx_ch:
             LOGGER.error(
-                "Channel not found: rx=%s tx=%s", rx_channel_num, tx_channel_num
+                "RX channel %s not found on %s", rx_channel_num, rx_device_name
+            )
+            return
+
+        # Resolve the TX channel NAME. The TX source need not be live: prefer an
+        # explicitly provided name, then the live device, then the persistent
+        # catalog. This lets routing target a transmitter that is briefly
+        # unreachable over control.
+        if not tx_channel_name:
+            tx_device = coordinator.get_device(tx_device_name)
+            if tx_device:
+                tx_ch = tx_device.tx_channels.get(tx_channel_num)
+                tx_channel_name = tx_ch.name if tx_ch else None
+            if not tx_channel_name:
+                tx_channel_name = coordinator.resolve_tx_channel_name(
+                    tx_device_name, tx_channel_num
+                )
+
+        if not tx_channel_name:
+            LOGGER.error(
+                "Could not resolve TX channel name for tx=%s ch=%s "
+                "(pass tx_channel_name to route to a source not seen yet)",
+                tx_device_name,
+                tx_channel_num,
             )
             return
 
         try:
-            await rx_device.add_subscription(rx_ch, tx_ch, tx_device)
+            await rx_device.add_subscription_by_name(
+                rx_ch, tx_channel_name, tx_device_name
+            )
             await coordinator.async_request_refresh()
         except Exception as err:
             LOGGER.error("Failed to add subscription: %s", err)
@@ -142,6 +163,7 @@ def _register_services(hass: HomeAssistant) -> None:
                     vol.Required("rx_channel"): vol.Coerce(int),
                     vol.Required("tx_device"): cv.string,
                     vol.Required("tx_channel"): vol.Coerce(int),
+                    vol.Optional("tx_channel_name"): cv.string,
                 }
             ),
         )
