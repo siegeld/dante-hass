@@ -52,7 +52,7 @@ async def async_setup_entry(
                         )
                     )
         if new_entities:
-            async_add_entities(new_entities, update_before_add=True)
+            async_add_entities(new_entities)
 
     _add_new_devices()
     entry.async_on_unload(coordinator.async_add_listener(lambda: _add_new_devices()))

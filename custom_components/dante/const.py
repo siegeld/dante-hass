@@ -6,6 +6,10 @@ LOGGER = logging.getLogger(__package__)
 
 SCAN_INTERVAL = 30
 MDNS_TIMEOUT = 5.0
+# Per-service mDNS resolve timeout (ms). Resolves run concurrently, so this is
+# the wall-clock ceiling for the whole discovery phase rather than a per-service
+# cost paid in series.
+MDNS_RESOLVE_TIMEOUT_MS = 3000
 DEVICE_MISS_LIMIT = 10  # drop device after this many consecutive missed discovery cycles (~5 min)
 
 PLATFORMS = ["sensor", "select", "number", "switch", "button"]

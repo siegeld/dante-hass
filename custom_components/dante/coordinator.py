@@ -25,7 +25,7 @@ from homeassistant.helpers.update_coordinator import (
 from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo
 
-from .const import DOMAIN, LOGGER, MDNS_TIMEOUT, DEVICE_MISS_LIMIT, SAP_MULTICAST, SAP_PORT, SAP_TIMEOUT, SCAN_INTERVAL
+from .const import DOMAIN, LOGGER, MDNS_RESOLVE_TIMEOUT_MS, MDNS_TIMEOUT, DEVICE_MISS_LIMIT, SAP_MULTICAST, SAP_PORT, SAP_TIMEOUT, SCAN_INTERVAL
 from .netaudio.const import SERVICE_CMC, SERVICES
 from .netaudio.device import DanteDevice
 
@@ -195,49 +195,69 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             found_services = list(self._discovered_services.items())
             mdns_hosts: dict[str, dict] = {}
 
-            for name, service_type in found_services:
-                # Skip per-channel virtual sub-device announcements (e.g.
-                # "01@danterbr11-villa-tascom"). These are mDNS-only artifacts
-                # that never respond to unicast Dante control queries — adding
-                # them just churns the known-devices registry and spams the
-                # log with "unreachable" warnings every DEVICE_MISS_LIMIT cycles.
-                if _SUBCHANNEL_NAME_RE.match(name):
-                    continue
+            async def _resolve(name: str, service_type: str):
+                """Resolve one mDNS service. Returns (name, info) or None."""
                 try:
                     info = AsyncServiceInfo(service_type, name)
-                    if not await info.async_request(aiozc.zeroconf, 3000):
-                        continue
-
-                    addresses = info.parsed_addresses()
-                    if not addresses:
-                        continue
-
-                    ipv4 = addresses[0]
-                    props = {}
-                    for k, v in info.properties.items():
-                        k = k.decode("utf-8") if isinstance(k, bytes) else k
-                        v = v.decode("utf-8") if isinstance(v, bytes) else v
-                        props[k] = v
-
-                    server_name = self._resolve_server_name(info, name)
-
-                    if server_name not in mdns_hosts:
-                        mdns_hosts[server_name] = {
-                            "ipv4": ipv4,
-                            "services": {},
-                            "props": {},
-                        }
-
-                    mdns_hosts[server_name]["ipv4"] = ipv4
-                    mdns_hosts[server_name]["services"][name] = {
-                        "type": service_type,
-                        "port": info.port,
-                        "properties": props,
-                    }
-                    mdns_hosts[server_name]["props"].update(props)
-
+                    if not await info.async_request(aiozc.zeroconf, MDNS_RESOLVE_TIMEOUT_MS):
+                        return None
+                    return (name, service_type, info)
                 except Exception as err:
                     LOGGER.debug("Error resolving %s: %s", name, err)
+                    return None
+
+            # Skip per-channel virtual sub-device announcements (e.g.
+            # "01@danterbr11-villa-tascom"). These are mDNS-only artifacts
+            # that never respond to unicast Dante control queries — adding
+            # them just churns the known-devices registry and spams the
+            # log with "unreachable" warnings every DEVICE_MISS_LIMIT cycles.
+            to_resolve = [
+                (name, service_type)
+                for name, service_type in found_services
+                if not _SUBCHANNEL_NAME_RE.match(name)
+            ]
+
+            # Resolve CONCURRENTLY. This used to be a sequential `for` loop with
+            # an awaited 3s-timeout request per service. With 144 announced
+            # services a single poll could run for minutes — longer than
+            # SCAN_INTERVAL, and long enough to blow the config-entry setup
+            # budget. Wall time is now the slowest single resolve, not the sum.
+            resolved = await asyncio.gather(
+                *(_resolve(name, st) for name, st in to_resolve)
+            )
+
+            for item in resolved:
+                if item is None:
+                    continue
+                name, service_type, info = item
+
+                addresses = info.parsed_addresses()
+                if not addresses:
+                    continue
+
+                ipv4 = addresses[0]
+                props = {}
+                for k, v in info.properties.items():
+                    k = k.decode("utf-8") if isinstance(k, bytes) else k
+                    v = v.decode("utf-8") if isinstance(v, bytes) else v
+                    props[k] = v
+
+                server_name = self._resolve_server_name(info, name)
+
+                if server_name not in mdns_hosts:
+                    mdns_hosts[server_name] = {
+                        "ipv4": ipv4,
+                        "services": {},
+                        "props": {},
+                    }
+
+                mdns_hosts[server_name]["ipv4"] = ipv4
+                mdns_hosts[server_name]["services"][name] = {
+                    "type": service_type,
+                    "port": info.port,
+                    "properties": props,
+                }
+                mdns_hosts[server_name]["props"].update(props)
 
             # --- PHASE 2: Merge mDNS into known-devices registry ---
             for server_name, mdns_info in mdns_hosts.items():
