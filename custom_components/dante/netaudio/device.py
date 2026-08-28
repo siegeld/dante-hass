@@ -7,6 +7,7 @@ import traceback
 
 from .channel import DanteChannel
 from .subscription import DanteSubscription
+from . import subscription_status
 
 from .const import (
     DEVICE_CONTROL_PORT,
@@ -18,6 +19,13 @@ from .const import (
 )
 
 logger = logging.getLogger("netaudio")
+
+# Subscription status codes that mean "nothing is subscribed here", i.e. a
+# healthy idle channel. NONE (0) is the documented one; 0x0e is undocumented
+# but is what every idle rx channel on this fabric actually reports, so it is
+# treated as idle rather than warned about. If the real meaning of 0x0e is ever
+# confirmed, give it a label in subscription_status.py and drop it from here.
+_IDLE_STATUS_CODES = (subscription_status.NONE, 0x0E)
 sockets = {}
 
 
@@ -404,7 +412,40 @@ class DanteDevice:
                             if sample_rate:
                                 self.sample_rate = sample_rate
 
-                        channel_status_text = None
+                        # The device reports WHY a subscription is or is not
+                        # flowing. This was hardcoded to None, so the guard below
+                        # never fired and the code was never surfaced anywhere --
+                        # a channel that was subscribed but unresolved looked
+                        # identical to a healthy one. Resolve it to its label and
+                        # log anything that is not a healthy connected state.
+                        channel_status_text = subscription_status.labels.get(
+                            subscription_status_code
+                        )
+
+                        # 0x0e is reported by every IDLE rx channel on this
+                        # fabric and is absent from subscription_status.labels.
+                        # It is not an error, so it must not warn -- but the
+                        # table is incomplete, so leave it visible at debug.
+                        if subscription_status_code in _IDLE_STATUS_CODES:
+                            logger.debug(
+                                "%s rx ch %d (%s): idle, status 0x%02x",
+                                self.name,
+                                channel_number,
+                                rx_channel_name,
+                                subscription_status_code,
+                            )
+                        elif subscription_status_code not in (
+                            subscription_status.STATIC,
+                            subscription_status.DYNAMIC,
+                        ):
+                            logger.warning(
+                                "%s rx ch %d (%s): subscription status 0x%02x (%s)",
+                                self.name,
+                                channel_number,
+                                rx_channel_name,
+                                subscription_status_code,
+                                channel_status_text or "unknown code",
+                            )
 
                         subscription = DanteSubscription()
                         rx_channel = DanteChannel()

@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-08-28
+
+### Fixed
+- **A successful AES67 subscription was reported as a failure on any device that answers with the short-form ACK.** `_send_aes67_subscribe` accepted only reply magic `0x2801`. Verified on the wire by sending one identical subscribe packet to two devices seconds apart:
+
+  ```
+  danterbr20 (10.11.7.95)  len=14   2809 000e 1234 3201 0001 0100 0000
+  danterbr17 (10.11.7.89)  len=108  2801 006c 1234 3201 0001 ...
+  ```
+
+  Both echo our sequence number (`0x1234`) and the `0x3201` command, and **both carry `status = 0x0001` at bytes 8-9, i.e. success.** They differ only in form: `0x2801` is a long reply echoing the full record, `0x2809` is a 14-byte ACK reusing the *request* magic. Matching `resp[1] == 0x01` alone threw away a successful subscribe on every short-form device.
+
+  Downstream this was silent and expensive: `select.py` reset `_pending_option = None`, so the RX select snapped back to `None` within ~15 ms; `crestron-nax` then computed `routed = False` for the room and reported the zone **off** while its own `tune` had logged "ready". The Villa Office Sonos sat on Line-in with nothing arriving. Now accepts both reply forms and decides purely on the status word.
+
+- **The per-channel subscription status code was parsed and then discarded.** `device.py` set `channel_status_text = None` unconditionally, which made the `if channel_status_text:` branch below it dead code. The device tells us *why* a subscription is or is not flowing and none of it reached a log or an entity — so a channel that was subscribed-but-unresolved was indistinguishable from a healthy one. It now resolves through `subscription_status.labels` and warns on any non-connected, non-idle state.
+
+- **An unrecognised subscribe reply was discarded without evidence.** The warning now carries `len=` and the first 32 bytes as `hex=`, so the next protocol mismatch is a one-line diagnosis instead of a packet-capture session.
+
+### Known gaps
+- `subscription_status.labels` has no entry for **`0x0e` (14)**, which is what every *idle* rx channel on this fabric reports (the table documents `NONE = 0`). It is treated as idle via `_IDLE_STATUS_CODES` in `device.py` rather than warned about, and logged at debug. If the true meaning of 14 is confirmed, give it a label in `subscription_status.py` and drop it from that tuple.
+
+
 ## 2026-08-22
 
 ### Fixed

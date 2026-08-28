@@ -692,8 +692,18 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             sock.sendto(pkt, (device_ip, self._AES67_COMMAND_PORT))
             resp, _ = sock.recvfrom(2048)
-            # Check response: magic 0x2801, status at byte 8-9 == 0x0001 = success
-            if len(resp) >= 10 and resp[0] == 0x28 and resp[1] == 0x01:
+            # Check response: status at byte 8-9 == 0x0001 = success.
+            #
+            # Two reply FORMS are both success, and both must be accepted:
+            #   0x2801 - long form (~108 bytes), echoes the full record back.
+            #   0x2809 - short-form ACK (14 bytes), echoing the REQUEST magic.
+            # Verified 2026-08-28 by sending one identical subscribe to two
+            # devices: danterbr17 replied 0x2801/len=108, danterbr20 replied
+            # 0x2809/len=14 - both with status 0x0001 and both echoing our seq
+            # and the 0x3201 command. Matching only 0x2801 silently discarded a
+            # SUCCESSFUL subscribe on every short-form device, which then read
+            # back as an unsubscribed RX channel and a room that would not tune.
+            if len(resp) >= 10 and resp[0] == 0x28 and resp[1] in (0x01, 0x09):
                 status = struct.unpack_from(">H", resp, 8)[0]
                 if status == 1:
                     return True
@@ -702,7 +712,10 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     status, device_ip, rx_channel,
                 )
                 return False
-            LOGGER.warning("AES67 subscribe unexpected response from %s", device_ip)
+            LOGGER.warning(
+                "AES67 subscribe unexpected response from %s: len=%d hex=%s",
+                device_ip, len(resp), resp[:32].hex(),
+            )
             return False
         except socket.timeout:
             LOGGER.warning("AES67 subscribe timeout from %s", device_ip)
