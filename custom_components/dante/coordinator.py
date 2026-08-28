@@ -692,18 +692,17 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             sock.sendto(pkt, (device_ip, self._AES67_COMMAND_PORT))
             resp, _ = sock.recvfrom(2048)
-            # Check response: status at byte 8-9 == 0x0001 = success.
+            # Check response: magic 0x2801, status at byte 8-9 == 0x0001 = success.
             #
-            # Two reply FORMS are both success, and both must be accepted:
-            #   0x2801 - long form (~108 bytes), echoes the full record back.
-            #   0x2809 - short-form ACK (14 bytes), echoing the REQUEST magic.
-            # Verified 2026-08-28 by sending one identical subscribe to two
-            # devices: danterbr17 replied 0x2801/len=108, danterbr20 replied
-            # 0x2809/len=14 - both with status 0x0001 and both echoing our seq
-            # and the 0x3201 command. Matching only 0x2801 silently discarded a
-            # SUCCESSFUL subscribe on every short-form device, which then read
-            # back as an unsubscribed RX channel and a room that would not tune.
-            if len(resp) >= 10 and resp[0] == 0x28 and resp[1] in (0x01, 0x09):
+            # NOTE (2026-08-28): a device that answers with a 14-byte 0x2809
+            # frame (e.g. danterbr20-villa-office) was briefly accepted here as
+            # success because its bytes 8-9 are also 0x0001. That was WRONG --
+            # Dante Controller showed the subscription was never established.
+            # The long 0x2801 reply echoes the request structure at bytes 10-13
+            # (01 01 00 10); the short frame does not (01 00 00 00), so offset 8
+            # is not a status word in that form. Treat only 0x2801 as success so
+            # the failure stays LOUD rather than silently claiming a subscribe.
+            if len(resp) >= 10 and resp[0] == 0x28 and resp[1] == 0x01:
                 status = struct.unpack_from(">H", resp, 8)[0]
                 if status == 1:
                     return True
