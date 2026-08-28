@@ -1,5 +1,83 @@
 # Changelog
 
+## [1.1.0] - 2026-08-28
+
+AES67 subscribe/unsubscribe rebuilt from Dante Controller packet captures. Before
+this release, AES67 routing worked only on the hardware it was reverse-engineered
+against, and could never be torn down on any hardware.
+
+### Fixed
+
+- **The AES67 subscribe frame was malformed, so newer devices ACKed it and did
+  nothing.** The old frame was 112 bytes with the channel selector at offset 96
+  and the codec/port/group tail 8 bytes late. Controller's real frame is **104
+  bytes** and carries a **per-rx-channel uint16 map at offset 42** (`entry[i]` =
+  the flow channel feeding rx channel *i+1*, `0` = leave alone). Rebuilt on that
+  layout; `tests/test_aes67_frames.py` pins it byte-for-byte against the capture.
+
+  Symptom: a room could not be tuned at all. The device replied, the integration
+  reported success, and no audio ever arrived.
+
+- **Unsubscribe never tore down an AES67 flow — on any device.** The
+  `SUBSCRIPTION_NONE` path called the *native Dante* `remove_subscription`, which
+  does not touch an AES67 flow. Controller does not use `0x3201` to unsubscribe at
+  all; it sends **`0x3010`, 52 bytes, one per channel**. A flow cleared the old
+  way was still running four hours later while HA reported the channel clear —
+  silence in the UI, sound in the room. Now sends the real teardown, and **refuses
+  to report a channel clear if the teardown fails** rather than lying about it.
+
+  Because the lifecycle is per-channel, a stereo flow needs a teardown per
+  channel; clearing one leaves the other holding the flow up.
+
+- **Reply validation judged success on the wrong field.** The start code is
+  **echoed** by the device and carries no meaning — the same request under
+  `0x2729`/`0x2809`/`0x2801` returns byte-identical payloads, and some firmware
+  normalises it while other firmware echoes verbatim. Validation now checks the
+  echoed sequence number (so a stale datagram cannot read as success), the echoed
+  opcode, and the status word at offset 8.
+
+- **The per-channel subscription status code was parsed and then discarded.**
+  `device.py` set `channel_status_text = None` unconditionally, making the branch
+  below it dead code, so the device's own account of why a subscription was or
+  was not flowing never reached a log or an entity.
+
+### Added
+
+- **`_build_aes67_unsubscribe_command`** — the real `0x3010` teardown.
+- **`tools/aes67_verify.py`** — query a device's actual flow state. The subscribe
+  reply cannot be trusted; this reads the device instead.
+- **`tests/test_aes67_frames.py`** — pins subscribe (ch1/ch2) and teardown
+  (ch1/ch2) to the canonical Controller captures so the frames cannot silently
+  drift again.
+
+### How to verify an AES67 subscription
+
+Never trust the subscribe reply. Read the device:
+
+- **`0x3200`** — binary liveness. Subscribed → ~100-byte reply; unsubscribed →
+  16-byte reply. Read-only and safe on a device playing audio (Controller polls
+  it constantly).
+- **`0x3000`** — per-channel detail. Records are 20 bytes (10 x uint16) from byte
+  12; `[0]=ch_num [5]=name_off [6]=rx_status [7]=sub_status`.
+
+  | `rx_status`/`sub_status` | meaning |
+  |---|---|
+  | `0x0000`/`0x0000` | no flow |
+  | `0x0100`/`0x000e` | **transient**, establishing — re-poll, do not call it failed |
+  | `0x0101`/`0x000e` | flow up |
+
+  `0x000e` means a flow **is present**. An AES67 flow never populates
+  `tx_device_name`, so it never appears as a normal Dante subscription — which is
+  why HA showed nothing while audio played.
+
+### Verified
+
+End to end on real hardware: subscribe → device reports `0101/000e` on both
+channels, audio confirmed by ear; teardown → both channels `0000/0000`, flow
+gone. The teardown was exercised on a live flow, not just a no-op.
+
+
+
 ## 2026-08-28
 
 ### Fixed

@@ -1,12 +1,16 @@
 {
   "domain": "dante",
   "name": "Dante Audio Network",
-  "codeowners": ["@siegeld"],
+  "codeowners": [
+    "@siegeld"
+  ],
   "config_flow": true,
-  "dependencies": ["zeroconf"],
+  "dependencies": [
+    "zeroconf"
+  ],
   "documentation": "https://github.com/siegeld/dante-hass",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/siegeld/dante-hass/issues",
   "requirements": [],
-  "version": "1.0.1"
+  "version": "1.1.0"
 }
