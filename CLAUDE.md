@@ -38,7 +38,9 @@ code — see the war stories.
 | `0x3000` | RX channels **+ subscription status** |
 | `0x3200` | AES67 flow liveness (binary: subscribed ≈100B reply, not 16B) |
 | `0x3201` | **AES67 subscribe** — 104 bytes |
-| `0x3010` | **AES67 teardown** — 52 bytes, **one per channel** |
+| `0x3010` | **AES67 teardown** — 52 bytes, **one per channel** (what we send) |
+| `0x3410` | **AES67 teardown, Controller's choice** — 36 bytes, channel uint16 @20 |
+| `0x3400` / `0x3600` | read-shaped, unexamined; `0x3600`'s reply embeds the flow descriptor |
 
 Unknown opcode returns a 10-byte `<start> 000a <seq> <opcode> 0030` from every
 device, so offset 8 carries a status/error code and `0x0030` = unknown command.
@@ -68,10 +70,26 @@ showed no subscription had ever been established. **Judge success on the echoed
 sequence number, the echoed opcode, and the status word at offset 8. Never on the
 start code.**
 
-**2. `0x000e` means a flow IS PRESENT, not "idle".** This was guessed wrong twice,
+**2. `0x000e` means a subscription IS PRESENT, not "idle".** Guessed wrong twice,
 in opposite directions, before a capture settled it. An AES67 flow never populates
 `tx_device_name`, so it never builds a normal subscription object and HA shows
-nothing for it — that absence is not evidence of no flow.
+nothing for it — that absence is not evidence of no subscription.
+
+**2a. The status pair is a STORED SUBSCRIPTION, not a liveness signal.** This was
+challenged on the grounds that a device appeared to change state with only read
+opcodes sent to it, which would have made the whole verification method useless
+(a `0000` could mean "rejected" or merely "not flowing right now"). **Disproved by
+experiment:** subscribe one channel to a NAX player that is *stopped and
+transmitting nothing*, and it still reports `0101/000e`. Nothing is arriving, so
+the field cannot be reporting arrival. `0x3200`'s reply also grows per
+subscription (16B → 100B → 184B for 0, 1, 2 channels), which is a record count,
+not a flow indicator.
+
+The apparent uncommanded transitions had a mundane cause: writes from *another
+host*. A capture taken on the Dante Controller machine cannot see unicast traffic
+between harbr2 and a device — the same limitation that stops harbr2 seeing
+Controller's traffic, inverted. "No writes in my capture" only ever means "none
+from my vantage point".
 
 **3. The native Dante unsubscribe does not remove an AES67 flow.** A flow cleared
 with `remove_subscription` alone was still running four hours later while HA

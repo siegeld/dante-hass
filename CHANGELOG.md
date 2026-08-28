@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.1.1] - 2026-08-28
+
+Verification method challenged and **confirmed by experiment**; second teardown
+opcode documented. No behaviour change.
+
+### Confirmed
+- **The `0x3000` status pair is a stored subscription, not a liveness signal.** It
+  was argued that `0101/000e` might mean "multicast is arriving right now", which
+  would have made the verification method useless — a `0000` could not then
+  distinguish a rejected command from a stream that simply was not flowing.
+  Disproved directly: a channel subscribed to a NAX player that is **stopped and
+  transmitting nothing** still reports `0101/000e`. Nothing is arriving, so the
+  field cannot be reporting arrival. `0x3200`'s reply length also grows per
+  subscription (16B / 100B / 184B for 0 / 1 / 2 channels) — a record count.
+- **`0x3010` is a correct teardown.** Tested head to head against Controller's
+  `0x3410` with two channels subscribed on one device: `0x3010` cleared ch1,
+  `0x3410` cleared ch2, each confirmed `0101/000e` → `0000/0000`. Both work.
+
+### Documented
+- **`0x3410`** — Controller's own teardown (36 bytes, channel uint16 at offset 20).
+  We continue to send `0x3010`; `0x3410` is recorded so Controller's different
+  choice is not later mistaken for evidence that ours is wrong.
+- `0x3400` / `0x3600` noted as unexamined read-shaped opcodes.
+- The "apparent uncommanded state changes" that prompted the challenge were writes
+  from another host: a capture on the Controller machine cannot see unicast
+  traffic between a HA host and a device. **"No writes in my capture" only ever
+  means "none from my vantage point."**
+
 ## [1.1.0] - 2026-08-28
 
 AES67 subscribe/unsubscribe rebuilt from Dante Controller packet captures. Before

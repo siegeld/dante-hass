@@ -708,6 +708,14 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         Because the lifecycle is per-channel, tearing down a stereo flow means
         sending this for EVERY channel -- clearing only one leaves the other
         holding the flow up.
+
+        There are TWO working teardowns. Dante Controller itself uses 0x3410 (a
+        36-byte frame, channel as a uint16 at offset 20). Both were tested head to
+        head on one device on 2026-08-28 with two channels subscribed: 0x3010
+        cleared ch1 and 0x3410 cleared ch2, each confirmed by the subscription
+        state going 0101/000e -> 0000/0000. We send 0x3010 because it is the one
+        this code has always built and it is proven; 0x3410 is documented here so
+        nobody assumes Controller's choice means ours is wrong.
         """
         p = bytearray(52)
         struct.pack_into(">HHHHH", p, 0, start_code, 0x0034, seq, 0x3010, 0x0000)
