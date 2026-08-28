@@ -19,7 +19,9 @@
 - **An unrecognised subscribe reply was discarded without evidence.** The warning now carries `len=` and the first 32 bytes as `hex=`, so the next protocol mismatch is a one-line diagnosis instead of a packet-capture session.
 
 ### Known gaps
-- `subscription_status.labels` has no entry for **`0x0e` (14)**, which is what every *idle* rx channel on this fabric reports (the table documents `NONE = 0`). It is treated as idle via `_IDLE_STATUS_CODES` in `device.py` rather than warned about, and logged at debug. If the true meaning of 14 is confirmed, give it a label in `subscription_status.py` and drop it from that tuple.
+- `subscription_status.labels` has no entry for **`0x0e` (14)**. It was first assumed to mean "idle"; that is **wrong**. Verified 2026-08-28: `danterbr20-villa-office` was subscribed to an AES67 flow by hand in Dante Controller and was audibly playing, and both rx channels still reported `0x0e`. The rx-channel subscription table therefore reflects only **native Dante subscriptions** — an AES67 flow does not appear in it at all. `0x0e` means "no native Dante subscription on this channel", independent of any AES67 flow. **These status codes cannot be used to verify or monitor an AES67 subscription.**
+
+- **`_build_aes67_subscribe_command` does not drive every Dante model.** It was reverse-engineered from captures of one device. `danterbr20-villa-office` (hardware new to this fabric) recognises opcode `0x3201` — it does not return the `2809 000a <seq> <opcode> 0030` unknown-command error that both devices give for a bogus opcode — but answers with a 14-byte `0x2809` frame instead of the 108-byte `0x2801` record, returns a byte-identical reply even for a nonsense `rx_channel`, and never establishes the flow. Subscribing the same device by hand in Dante Controller works and plays audio, so the device is fine and our packet is not. Fixing this needs a capture of Dante Controller subscribing this model on UDP/4440, diffed against what we build.
 
 
 ## 2026-08-22

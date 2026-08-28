@@ -20,11 +20,17 @@ from .const import (
 
 logger = logging.getLogger("netaudio")
 
-# Subscription status codes that mean "nothing is subscribed here", i.e. a
-# healthy idle channel. NONE (0) is the documented one; 0x0e is undocumented
-# but is what every idle rx channel on this fabric actually reports, so it is
-# treated as idle rather than warned about. If the real meaning of 0x0e is ever
-# confirmed, give it a label in subscription_status.py and drop it from here.
+# Status codes that must not warn.
+#
+# 0x0e is NOT "idle" -- that was an early wrong guess. Verified 2026-08-28:
+# danterbr20-villa-office was subscribed to an AES67 flow by hand in Dante
+# Controller and was audibly playing, and BOTH its rx channels still reported
+# 0x0e. So this table reflects only NATIVE DANTE subscriptions; an AES67 flow
+# subscription does not appear here at all, and 0x0e means "no native Dante
+# subscription on this channel" regardless of whether an AES67 flow is running.
+#
+# The practical consequence: these status codes can NEVER be used to verify or
+# monitor an AES67 subscription. Do not build that check on them.
 _IDLE_STATUS_CODES = (subscription_status.NONE, 0x0E)
 sockets = {}
 
