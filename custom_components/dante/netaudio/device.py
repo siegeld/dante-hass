@@ -20,17 +20,33 @@ from .const import (
 
 logger = logging.getLogger("netaudio")
 
-# Status codes that must not warn.
+# 0x0e means an AES67 FLOW IS PRESENT on the channel -- it is not "idle".
 #
-# 0x0e is NOT "idle" -- that was an early wrong guess. Verified 2026-08-28:
-# danterbr20-villa-office was subscribed to an AES67 flow by hand in Dante
-# Controller and was audibly playing, and BOTH its rx channels still reported
-# 0x0e. So this table reflects only NATIVE DANTE subscriptions; an AES67 flow
-# subscription does not appear here at all, and 0x0e means "no native Dante
-# subscription on this channel" regardless of whether an AES67 flow is running.
+# This was guessed wrong twice, in opposite directions, before being settled by
+# capture on 2026-08-28. Ground truth, from Dante Controller driving a device
+# through a full unsubscribe -> subscribe-ch1 -> subscribe-ch2 sequence while the
+# 0x3000 reply was diffed on every poll:
 #
-# The practical consequence: these status codes can NEVER be used to verify or
-# monitor an AES67 subscription. Do not build that check on them.
+#   ch1 0000/0000  ch2 0101/000e     only ch2 subscribed
+#   ch1 0000/0000  ch2 0000/0000     unsubscribe cleared ch2
+#   ch1 0100/000e  ch2 0000/0000     subscribe ch1, caught MID-ESTABLISH
+#   ch1 0101/000e  ch2 0000/0000     settles 0100 -> 0101
+#   ch1 0101/000e  ch2 0101/000e     subscribe ch2
+#
+# Independently reproduced from this host: danterbr20 read 0101/000e on both
+# channels while audibly playing, and flipped to 0000/0000 the moment it was
+# unsubscribed in Controller.
+#
+# So (rx_channel_status_code, subscription_status_code) is the ONLY reliable way
+# to verify an AES67 subscription -- the subscribe ACK cannot be trusted:
+#   0x0000/0x0000  no flow
+#   0x0100/0x000e  TRANSIENT, flow establishing -- re-poll, do not call it failed
+#   0x0101/0x000e  flow up
+#
+# An AES67 flow never populates tx_device_name, so device.py's `if tx_device_name:`
+# branch never builds a subscription object for one; that is why HA showed nothing.
+# These codes must not warn, because a healthy AES67 flow sits at 0x0e forever.
+_AES67_FLOW_STATUS_CODES = (0x0E,)
 _IDLE_STATUS_CODES = (subscription_status.NONE, 0x0E)
 sockets = {}
 

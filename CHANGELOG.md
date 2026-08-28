@@ -19,64 +19,14 @@
 - **An unrecognised subscribe reply was discarded without evidence.** The warning now carries `len=` and the first 32 bytes as `hex=`, so the next protocol mismatch is a one-line diagnosis instead of a packet-capture session.
 
 ### Known gaps
-- `subscription_status.labels` has no entry for **`0x0e` (14)**. It was first assumed to mean "idle"; that is **wrong**. Verified 2026-08-28: `danterbr20-villa-office` was subscribed to an AES67 flow by hand in Dante Controller and was audibly playing, and both rx channels still reported `0x0e`. The rx-channel subscription table therefore reflects only **native Dante subscriptions** — an AES67 flow does not appear in it at all. `0x0e` means "no native Dante subscription on this channel", independent of any AES67 flow. **These status codes cannot be used to verify or monitor an AES67 subscription.**
+- **Our unsubscribe does not tear down an AES67 flow.** `select.py`'s `SUBSCRIPTION_NONE` path calls `device.remove_subscription(rx_ch)`, which is a *native Dante* unsubscribe. Confirmed 2026-08-28: a test AES67 flow was set on `danterbr17-villa-club-room` ch1, then cleared to "None" (HA reported `verified_state: "None"`) — and four hours later both `0x3000` (`0101/000e`) and `0x3200` (100-byte reply) still showed the flow running. The consequence is that `off` is as broken as `on` for any AES67-routed room: `crestron-nax`'s `room_off` unsubscribes, reports success, and the audio keeps flowing. Needs Controller's teardown bytes, same as the subscribe.
 
-- **`_build_aes67_subscribe_command` does not drive every Dante model.** It was reverse-engineered from captures of one device. `danterbr20-villa-office` (hardware new to this fabric) recognises opcode `0x3201` — it does not return the `2809 000a <seq> <opcode> 0030` unknown-command error that both devices give for a bogus opcode — but answers with a 14-byte `0x2809` frame instead of the 108-byte `0x2801` record, returns a byte-identical reply even for a nonsense `rx_channel`, and never establishes the flow. Subscribing the same device by hand in Dante Controller works and plays audio, so the device is fine and our packet is not. Fixing this needs a capture of Dante Controller subscribing this model on UDP/4440, diffed against what we build.
+- **`_build_aes67_subscribe_command` does not drive every Dante model.** It was reverse-engineered from captures of one device. `danterbr20-villa-office` recognises opcode `0x3201` (it does not return the `... 0030` unknown-command error) but answers with a 14-byte frame instead of the 108-byte record, returns a byte-identical reply even for a nonsense `rx_channel`, and never establishes the flow. The same device subscribes and plays fine from Dante Controller, so the device is not at fault.
 
+  ⚠ The **reply start code is not a protocol marker** — the device *echoes* it. The same `0x3000` read sent under `0x2729`, `0x2809` and `0x2801` returns byte-identical payloads per device; `.89` normalises `0x2809` to `0x2801` in its reply while `.95` echoes verbatim. That is a cosmetic firmware difference with no functional meaning, and an earlier attempt to treat the `0x2809` reply as the bug (and then as success) was wrong on both counts. Dante Controller itself uses `0x2729`.
 
-## 2026-08-22
+### How to verify an AES67 subscription
+The subscribe ACK cannot be trusted. Use the device's own state:
 
-### Fixed
-- **Integration failed to set up entirely (`setup_error`) once the network reached 21 devices.** All five platforms passed `update_before_add=True` to `async_add_entities`. `DanteEntity` is a `CoordinatorEntity`, whose `async_update()` is `await self.coordinator.async_request_refresh()` — documented upstream as "Only used by the generic entity update service". So setup demanded a full coordinator refresh for each of 391 entities, blew through the config-entry setup budget, and Home Assistant cancelled the task (`CancelledError` out of `_async_add_and_update_entities`).
-
-  The `update_before_add=True` added on 2026-03-01 was described as "a safety net against duplicate entity objects", but it has no deduplication semantics. Duplicates are prevented by `_attr_unique_id` (set on every entity in all five platforms) together with the coordinator-level `_platform_known_devices` set — which was the actual fix in that same change. Removing it is therefore safe and restores setup.
-
-- **mDNS discovery resolved services one at a time.** Phase 1 of `_async_update_data` looped over every announced service awaiting a 3-second-timeout `AsyncServiceInfo.async_request` in series. With 142–144 announced services a single poll could run for minutes — longer than `SCAN_INTERVAL` (30 s), and long enough on its own to threaten the setup budget. Resolves now run concurrently via `asyncio.gather`, so wall time is the slowest single resolve rather than the sum. Platform setup went from being killed after >10 s to completing in ~0.2 s.
-
-### Changed
-- Per-service mDNS resolve timeout is now the named constant `MDNS_RESOLVE_TIMEOUT_MS` (3000) instead of a literal.
-
-## 2026-03-13
-
-### Fixed
-- Fix device merge bug — use Dante device name (from mDNS service name) as device identifier instead of hardware hostname, which could be generic/short and cause multiple devices to merge into one HA device entry
-
-## 2026-03-01
-
-### Fixed
-- Fix duplicate entities on HA restart — moved per-platform `known_devices` tracking from local variables (reset on every restart) to coordinator-level dict that persists across platform reloads
-- Added `update_before_add=True` to all `async_add_entities` calls as a safety net against duplicate entity objects
-
-## 2026-02-28
-
-### Fixed
-- Optimistic state update for Dante subscription selects — UI reflects changes immediately instead of waiting for next poll cycle
-
-### Fixed
-- Fix duplicate entities caused by null bytes in device names and unstable device name keying
-
-## 2026-02-27
-
-### Changed
-- Stop depending on mDNS for known device availability — devices are queried directly by unicast UDP every poll cycle once discovered
-- Persistent mDNS browser for continuous background discovery instead of per-poll scans
-- Dynamic entity registration — new devices discovered mid-session get entities created automatically
-
-### Fixed
-- Improve discovery reliability with device caching and miss-count eviction (DEVICE_MISS_LIMIT consecutive failures before removal)
-- Fix entity stability, socket timeouts, and AES67 state reconciliation after restart
-
-## 2026-02-22
-
-### Added
-- AES67/SAP stream discovery — automatically discovers AES67 multicast streams and presents them as selectable RX sources
-- AES67 subscription routing — subscribe Dante RX channels to AES67 multicast flows directly from the HA UI
-
-## 2026-02-15
-
-### Added
-- Initial release — Dante Audio Network integration for Home Assistant
-- mDNS device discovery, audio subscription routing, device monitoring and control
-- Per-channel gain control for AVIO adapters
-- AES67 mode toggle, device identify button
-- HA services for programmatic subscription management
+- **`0x3200`** — cheap binary liveness check. Subscribed → ~100-byte reply; unsubscribed → 16-byte reply (`02 00 00 00 00 00`). Read-only and safe on a device playing audio (Dante Controller polls it ~9x per 12s).
+- **`0x3000`** — per-channel detail. Records are 20 bytes (10 × uint16) starting at byte 12 of the reply; `[0]=ch_num [5]=name_off [6]=rx_status [7]=sub_status`. See the status pairs documented in `netaudio/device.py`. Require `0x0101` and re-poll: `0x0100/0x000e` is a real transient mid-establish state and a single poll can misread it as failure.
