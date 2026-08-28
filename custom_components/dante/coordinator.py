@@ -621,56 +621,98 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         flow_channel: int,
         stream_info: dict[str, Any],
         seq: int,
+        n_rx: int = 2,
+        start_code: int = 0x2729,
+        token: int = 0x0000,
     ) -> bytes:
-        """Build a 112-byte AES67 subscription command (0x3201).
+        """Build a 104-byte AES67 subscription command (0x3201).
 
-        Protocol reverse-engineered from Dante Controller captures.
+        Templated on real Dante Controller captures (2026-08-28) rather than
+        guessed. tests/test_aes67_frames.py pins this byte-for-byte against a
+        capture of Controller subscribing danterbr20-villa-office, where the
+        flow demonstrably came up (audio confirmed, 0x3000 read 0101/000e).
+
+        The PREVIOUS version of this function was 112 bytes: it put the channel
+        selector at offset 96 and pushed the codec/port/group tail 8 bytes late.
+        Controller sends no such field there. That builder drove older hardware
+        but silently failed on newer units, which ACKed and did nothing -- the
+        Villa Office room could not be tuned at all.
+
+        Layout (offsets are into the whole frame):
+             0  start code (ECHOED by the device, not a protocol marker -- the
+                same request under 0x2729/0x2809/0x2801 returns byte-identical
+                payloads; some firmware normalises it in the reply)
+             2  total length (104)
+             4  sequence
+             6  opcode 0x3201
+            14  transient UI token; Controller varies it, zero is accepted
+            42  per-rx-channel map, one uint16 per rx channel:
+                entry[i] = flow channel feeding rx channel i+1, 0 = leave alone.
+                THE LIFECYCLE IS PER-CHANNEL -- Controller sends one subscribe
+                per channel, and one 0x3010 per channel to tear down.
+            68  flow source IPv4
+            76  flow/session id
+            96  encoding byte
+            97  channel count
+            98  RTP port
+           100  multicast group IPv4
         """
-        source_ip = socket.inet_aton(stream_info["origin_ip"])
-        mcast_ip = socket.inet_aton(stream_info["multicast_addr"])
-        flow_id = stream_info["session_id"] & 0xFFFFFFFF
-        rtp_port = stream_info["port"]
-        ch_count = stream_info["channels"]
-
-        # Derive encoding byte from codec string (e.g. "L24/48000/2")
+        p = bytearray(104)
+        struct.pack_into(">HHHHH", p, 0, start_code, 104, seq, 0x3201, 0x0000)
+        struct.pack_into(">HH", p, 10, 0x0101, 0x0010)
+        struct.pack_into(">H", p, 14, token)
+        struct.pack_into(">H", p, 18, 0x0202)
+        struct.pack_into(">H", p, 28, 0x0001)
+        struct.pack_into(">H", p, 30, 0x0002)
+        struct.pack_into(">H", p, 32, 0x0001)
+        struct.pack_into(">H", p, 34, 0x0060)
+        struct.pack_into(">H", p, 36, 0x002A)
+        struct.pack_into(">H", p, 38, 0x002C)
+        struct.pack_into(">H", p, 40, 0x0030)
+        for i in range(n_rx):
+            struct.pack_into(
+                ">H", p, 42 + i * 2,
+                flow_channel if (i + 1) == rx_channel else 0,
+            )
+        struct.pack_into(">H", p, 52, 0x0800)
+        struct.pack_into(">H", p, 60, 0x0003)
+        struct.pack_into(">H", p, 62, 0x0040)
+        struct.pack_into(">H", p, 64, 0x1000)
+        struct.pack_into(">H", p, 66, 0x000B)
+        p[68:72] = socket.inet_aton(stream_info["origin_ip"])
+        struct.pack_into(">I", p, 76, stream_info["session_id"] & 0xFFFFFFFF)
         codec = stream_info.get("codec", "")
         enc_name = codec.split("/")[0] if codec else "L24"
-        enc_byte = DanteDataUpdateCoordinator._AES67_ENCODING_MAP.get(enc_name, 0x08)
+        p[96] = DanteDataUpdateCoordinator._AES67_ENCODING_MAP.get(enc_name, 0x08)
+        p[97] = stream_info["channels"]
+        struct.pack_into(">H", p, 98, stream_info["port"])
+        p[100:104] = socket.inet_aton(stream_info["multicast_addr"])
+        return bytes(p)
 
-        pkt = bytearray(112)
+    @staticmethod
+    def _build_aes67_unsubscribe_command(
+        rx_channel: int,
+        seq: int,
+        start_code: int = 0x2729,
+    ) -> bytes:
+        """Build the 52-byte AES67 teardown (0x3010) for ONE rx channel.
 
-        # Header
-        struct.pack_into(">2sHH2s", pkt, 0, b"\x28\x09", 112, seq, b"\x32\x01")
-        # Flags/version
-        pkt[10] = 0x01; pkt[11] = 0x01
-        pkt[12] = 0x00; pkt[13] = 0x10
-        # Record type
-        struct.pack_into(">H", pkt, 18, 0x4202)
-        # Record count
-        struct.pack_into(">H", pkt, 28, 0x0001)
-        # Offset
-        struct.pack_into(">H", pkt, 34, 0x0068)
-        # Sub-record structure
-        struct.pack_into(">H", pkt, 44, 0x0003)
-        struct.pack_into(">H", pkt, 46, 0x0040)
-        struct.pack_into(">H", pkt, 52, 0x0002)
-        struct.pack_into(">H", pkt, 54, 0x0060)
+        Dante Controller does NOT use 0x3201 to unsubscribe -- 0x3201 does not
+        appear anywhere in a teardown capture. It sends 0x3010, one per channel.
 
-        # Flow source info (offset 64)
-        struct.pack_into(">HH", pkt, 64, 0x1000, 0x000B)
-        pkt[68:72] = source_ip
-        struct.pack_into(">I", pkt, 76, flow_id)
+        This is why `off` was as broken as `on`: select.py's SUBSCRIPTION_NONE
+        path called the NATIVE Dante remove_subscription, which does not touch an
+        AES67 flow. A test flow cleared that way was still running four hours
+        later on both 0x3000 and 0x3200, while HA reported the channel clear.
 
-        # Channel mapping (offset 96)
-        struct.pack_into(">H", pkt, 96, rx_channel)
-        struct.pack_into(">H", pkt, 98, ch_count)
-        pkt[102] = flow_channel
-        pkt[104] = enc_byte
-        pkt[105] = ch_count
-        struct.pack_into(">H", pkt, 106, rtp_port)
-        pkt[108:112] = mcast_ip
-
-        return bytes(pkt)
+        Because the lifecycle is per-channel, tearing down a stereo flow means
+        sending this for EVERY channel -- clearing only one leaves the other
+        holding the flow up.
+        """
+        p = bytearray(52)
+        struct.pack_into(">HHHHH", p, 0, start_code, 0x0034, seq, 0x3010, 0x0000)
+        struct.pack_into(">HH", p, 10, 0x0201, rx_channel)
+        return bytes(p)
 
     def _send_aes67_subscribe(
         self,
