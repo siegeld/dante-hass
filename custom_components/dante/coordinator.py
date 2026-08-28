@@ -714,55 +714,92 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         struct.pack_into(">HH", p, 10, 0x0201, rx_channel)
         return bytes(p)
 
+    _AES67_START_CODE = 0x2729
+
+    def _aes67_command(
+        self, device_ip: str, pkt: bytes, opcode: int, seq: int, what: str
+    ) -> bool:
+        """Send one AES67 control frame and decide success from the reply.
+
+        The reply ECHOES the start code we sent, so the start code carries no
+        information and must NOT be used to judge success -- an earlier version
+        of this checked for 0x2801 and rejected genuine successes from any device
+        that echoes verbatim. Judge on: the echoed sequence number (so we are not
+        reading a stale or unrelated datagram), the echoed opcode, and the status
+        word at offset 8.
+
+        Verified live 2026-08-28 against danterbr17-villa-club-room:
+          subscribe 0x3201 -> 100-byte reply, status 0x0001, flow came up
+          teardown  0x3010 ->  10-byte reply, status 0x0001, flow went away
+        """
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(2.0)
+        try:
+            sock.sendto(pkt, (device_ip, self._AES67_COMMAND_PORT))
+            resp, _ = sock.recvfrom(2048)
+            if len(resp) < 10:
+                LOGGER.warning(
+                    "AES67 %s: short reply from %s: len=%d hex=%s",
+                    what, device_ip, len(resp), resp.hex(),
+                )
+                return False
+            r_seq, r_op, status = struct.unpack_from(">HHH", resp, 4)
+            if r_seq != seq or r_op != opcode:
+                LOGGER.warning(
+                    "AES67 %s: reply mismatch from %s (seq %04x/%04x op %04x/%04x) hex=%s",
+                    what, device_ip, r_seq, seq, r_op, opcode, resp[:32].hex(),
+                )
+                return False
+            if status != 1:
+                LOGGER.warning(
+                    "AES67 %s: %s returned status 0x%04x hex=%s",
+                    what, device_ip, status, resp[:32].hex(),
+                )
+                return False
+            return True
+        except socket.timeout:
+            LOGGER.warning("AES67 %s: timeout from %s", what, device_ip)
+            return False
+        finally:
+            sock.close()
+
     def _send_aes67_subscribe(
         self,
         device_ip: str,
         rx_channel: int,
         flow_channel: int,
         stream_info: dict[str, Any],
+        n_rx: int = 2,
     ) -> bool:
-        """Send an AES67 subscription command to a Dante device (blocking I/O)."""
+        """Subscribe one rx channel to an AES67 flow (blocking I/O)."""
         import random
 
         seq = random.randint(0, 65535)
         pkt = self._build_aes67_subscribe_command(
-            rx_channel, flow_channel, stream_info, seq
+            rx_channel, flow_channel, stream_info, seq,
+            n_rx=n_rx, start_code=self._AES67_START_CODE,
+        )
+        return self._aes67_command(
+            device_ip, pkt, 0x3201, seq, f"subscribe ch{rx_channel}"
         )
 
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(2.0)
-        try:
-            sock.sendto(pkt, (device_ip, self._AES67_COMMAND_PORT))
-            resp, _ = sock.recvfrom(2048)
-            # Check response: magic 0x2801, status at byte 8-9 == 0x0001 = success.
-            #
-            # NOTE (2026-08-28): a device that answers with a 14-byte 0x2809
-            # frame (e.g. danterbr20-villa-office) was briefly accepted here as
-            # success because its bytes 8-9 are also 0x0001. That was WRONG --
-            # Dante Controller showed the subscription was never established.
-            # The long 0x2801 reply echoes the request structure at bytes 10-13
-            # (01 01 00 10); the short frame does not (01 00 00 00), so offset 8
-            # is not a status word in that form. Treat only 0x2801 as success so
-            # the failure stays LOUD rather than silently claiming a subscribe.
-            if len(resp) >= 10 and resp[0] == 0x28 and resp[1] == 0x01:
-                status = struct.unpack_from(">H", resp, 8)[0]
-                if status == 1:
-                    return True
-                LOGGER.warning(
-                    "AES67 subscribe returned status %d for %s ch %d",
-                    status, device_ip, rx_channel,
-                )
-                return False
-            LOGGER.warning(
-                "AES67 subscribe unexpected response from %s: len=%d hex=%s",
-                device_ip, len(resp), resp[:32].hex(),
-            )
-            return False
-        except socket.timeout:
-            LOGGER.warning("AES67 subscribe timeout from %s", device_ip)
-            return False
-        finally:
-            sock.close()
+    def _send_aes67_unsubscribe(self, device_ip: str, rx_channel: int) -> bool:
+        """Tear down the AES67 flow on one rx channel (blocking I/O).
+
+        The native Dante remove_subscription does NOT do this -- a flow cleared
+        that way keeps running while HA reports the channel clear. The lifecycle
+        is per-channel, so a stereo flow needs this for EVERY channel; clearing
+        one leaves the other holding the flow up.
+        """
+        import random
+
+        seq = random.randint(0, 65535)
+        pkt = self._build_aes67_unsubscribe_command(
+            rx_channel, seq, start_code=self._AES67_START_CODE
+        )
+        return self._aes67_command(
+            device_ip, pkt, 0x3010, seq, f"teardown ch{rx_channel}"
+        )
 
     def get_aes67_stream_info(self, option: str) -> tuple[dict[str, Any], int] | None:
         """Parse an AES67 option string and return (stream_info, flow_channel_index).

@@ -222,8 +222,44 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
         key = (self._device_name, self._rx_channel_num)
 
         if option == SUBSCRIPTION_NONE:
-            self.coordinator._aes67_selections.pop(key, None)
+            had_aes67 = self.coordinator._aes67_selections.pop(key, None)
             try:
+                # An AES67 flow is NOT removed by the native Dante unsubscribe.
+                # Verified 2026-08-28: a flow cleared with remove_subscription
+                # alone was still running four hours later on both 0x3000 and
+                # 0x3200 while HA reported the channel clear -- silence in the
+                # UI, sound in the room. Send the real 0x3010 teardown first.
+                if had_aes67:
+                    device_ip = (self.device_data or {}).get("ipv4")
+                    if not device_ip:
+                        LOGGER.error(
+                            "No IP for %s; cannot tear down AES67 flow on ch %s",
+                            self._device_name,
+                            self._rx_channel_num,
+                        )
+                        return
+                    ok = await self.hass.async_add_executor_job(
+                        self.coordinator._send_aes67_unsubscribe,
+                        device_ip,
+                        self._rx_channel_num,
+                    )
+                    if not ok:
+                        # Put the selection back: the flow is still running, and
+                        # reporting the channel clear would be a lie.
+                        self.coordinator._aes67_selections[key] = had_aes67
+                        LOGGER.error(
+                            "AES67 teardown FAILED on %s ch %s -- flow is still "
+                            "running; not reporting the channel as clear",
+                            self._device_name,
+                            self._rx_channel_num,
+                        )
+                        self.async_write_ha_state()
+                        return
+                    LOGGER.warning(
+                        "AES67 torn down %s ch %d",
+                        self._device_name,
+                        self._rx_channel_num,
+                    )
                 await device.remove_subscription(rx_ch)
                 self._pending_option = SUBSCRIPTION_NONE
                 self.async_write_ha_state()
