@@ -14,6 +14,11 @@ from .coordinator import DanteDataUpdateCoordinator
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Dante from a config entry."""
     coordinator = DanteDataUpdateCoordinator(hass)
+    # Restore the persisted device registry FIRST: the first poll can then reach
+    # every previously-known device by unicast without waiting on mDNS, so a
+    # restart brings entities back immediately instead of after the devices'
+    # next announcement round.
+    await coordinator.async_load_known_devices()
     await coordinator.async_start_browser()
     await coordinator.async_config_entry_first_refresh()
 

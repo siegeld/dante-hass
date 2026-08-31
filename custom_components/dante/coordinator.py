@@ -17,6 +17,7 @@ _SUBCHANNEL_NAME_RE = re.compile(r"^\d+@")
 
 from homeassistant.components import zeroconf
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
@@ -28,6 +29,10 @@ from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo
 from .const import DOMAIN, LOGGER, MDNS_RESOLVE_TIMEOUT_MS, MDNS_TIMEOUT, DEVICE_MISS_LIMIT, SAP_MULTICAST, SAP_PORT, SAP_TIMEOUT, SCAN_INTERVAL
 from .netaudio.const import SERVICE_CMC, SERVICES
 from .netaudio.device import DanteDevice
+
+
+STORAGE_VERSION = 1
+STORAGE_KEY = f"{DOMAIN}_known_devices"
 
 
 class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -64,6 +69,15 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Registry of all known devices with connection info (keyed by server_name)
         # Each entry: {ipv4, services, props, dev_name}
         self._known_devices: dict[str, dict[str, Any]] = {}
+        # The registry is PERSISTED across restarts. mDNS is only how a device is
+        # *discovered*; once known it is polled by direct unicast, so a restart
+        # does not need mDNS at all to bring entities back. Without this, a cold
+        # start waits for the devices' next unsolicited announcement round --
+        # multicast *queries* on a multi-homed host go out one interface and may
+        # never reach the audio VLAN, which left the integration with zero
+        # entities for minutes after every restart.
+        self._store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+        self._known_devices_dirty = False
         # Persistent mDNS browser state
         self._browser: AsyncServiceBrowser | None = None
         self._discovered_services: dict[str, str] = {}  # name -> service_type
@@ -87,6 +101,47 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._discovered_services[name] = service_type
         elif state_change is ServiceStateChange.Removed:
             self._discovered_services.pop(name, None)
+
+    async def async_load_known_devices(self) -> None:
+        """Restore the persisted device registry.
+
+        Called before the first refresh so the very first poll can reach every
+        previously-known device by unicast, independent of mDNS timing.
+        """
+        try:
+            stored = await self._store.async_load()
+        except Exception as err:  # corrupt/unreadable store must never block setup
+            LOGGER.warning("Could not load stored Dante devices: %s", err)
+            return
+        if not stored:
+            return
+        devices = stored.get("devices") or {}
+        restored = 0
+        for server_name, info in devices.items():
+            if not isinstance(info, dict) or not info.get("ipv4"):
+                continue
+            self._known_devices.setdefault(server_name, {
+                "ipv4": info["ipv4"],
+                "services": info.get("services") or {},
+                "props": info.get("props") or {},
+            })
+            if info.get("dev_name"):
+                self._known_devices[server_name]["dev_name"] = info["dev_name"]
+            restored += 1
+        LOGGER.info(
+            "Restored %d known Dante device(s) from storage; polling by unicast "
+            "without waiting for mDNS", restored,
+        )
+
+    async def _async_save_known_devices(self) -> None:
+        """Persist the device registry if it changed this cycle."""
+        if not self._known_devices_dirty:
+            return
+        self._known_devices_dirty = False
+        try:
+            await self._store.async_save({"devices": self._known_devices})
+        except Exception as err:
+            LOGGER.debug("Could not persist Dante devices: %s", err)
 
     async def async_start_browser(self) -> None:
         """Start the persistent mDNS browser."""
@@ -278,6 +333,7 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "services": dict(mdns_info["services"]),
                         "props": dict(mdns_info["props"]),
                     }
+                    self._known_devices_dirty = True
                 else:
                     existing = self._known_devices[server_name]
                     old_ip = existing.get("ipv4")
@@ -287,6 +343,7 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             "Device %s IP changed: %s -> %s",
                             server_name, old_ip, new_ip,
                         )
+                        self._known_devices_dirty = True
                     existing["ipv4"] = new_ip
                     existing.setdefault("services", {}).update(mdns_info["services"])
                     existing.setdefault("props", {}).update(mdns_info["props"])
@@ -352,8 +409,9 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._miss_count.pop(server_name, None)
                     dev_name = device.name or known_info.get("dev_name") or server_name
                     # Cache the resolved dev_name so failed queries reuse it
-                    if device.name:
+                    if device.name and known_info.get("dev_name") != device.name:
                         known_info["dev_name"] = device.name
+                        self._known_devices_dirty = True
                     dev_data = self._build_device_data(device, server_name)
                     result[dev_name] = dev_data
                     self._devices[dev_name] = device
@@ -378,6 +436,7 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         )
                         self._miss_count.pop(server_name, None)
                         self._known_devices.pop(server_name, None)
+                        self._known_devices_dirty = True
                         self._cached_data.pop(dev_name, None)
                         self._devices.pop(dev_name, None)
 
@@ -409,6 +468,8 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Reconcile AES67 subscriptions from device state + SAP streams
             if self._aes67_streams:
                 self._reconcile_aes67_subscriptions(result)
+
+            await self._async_save_known_devices()
 
             return result
 
