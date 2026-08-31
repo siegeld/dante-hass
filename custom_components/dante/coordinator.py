@@ -55,6 +55,12 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._miss_count: dict[str, int] = {}
         # Cache last-known coordinator result data (keyed by dev_name)
         self._cached_data: dict[str, Any] = {}
+        # Persistent catalog of known TX channels so routing options survive
+        # transient control-poll failures. Keyed by stable server_name; value is
+        # {"name": <current display name>, "tx_channels": {num: name}}. Refreshed
+        # on each successful poll (renames update in place) and never cleared on a
+        # miss/purge. Coordinator-lifetime only (rebuilt from polling on reload).
+        self._tx_catalog: dict[str, dict[str, Any]] = {}
         # Registry of all known devices with connection info (keyed by server_name)
         # Each entry: {ipv4, services, props, dev_name}
         self._known_devices: dict[str, dict[str, Any]] = {}
@@ -351,6 +357,7 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     dev_data = self._build_device_data(device, server_name)
                     result[dev_name] = dev_data
                     self._devices[dev_name] = device
+                    self._update_tx_catalog(server_name, dev_name, dev_data)
                 else:
                     # Device unreachable — use cached data with miss tracking
                     misses = self._miss_count.get(server_name, 0) + 1
@@ -414,14 +421,49 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Get a live DanteDevice object by name."""
         return self._devices.get(device_name)
 
+    def _update_tx_catalog(
+        self, server_name: str, dev_name: str, dev_data: dict[str, Any]
+    ) -> None:
+        """Persist a device's TX channels so routing options/names survive a
+        transient control-poll failure. Keyed by stable server_name; the display
+        name is refreshed each call so a Dante rename updates in place instead of
+        leaving the old name behind."""
+        tx_channels = dev_data.get("tx_channels") or {}
+        if tx_channels:
+            self._tx_catalog[server_name] = {
+                "name": dev_name,
+                "tx_channels": {
+                    num: ch["name"] for num, ch in tx_channels.items()
+                },
+            }
+
     def get_all_tx_channels(self) -> list[str]:
-        """Get all TX channels across all devices as 'DeviceName - ChannelName'."""
-        options = []
+        """All TX channels as 'DeviceName - ChannelName'.
+
+        Built from the persistent catalog so the option pool does not collapse
+        when a source is briefly unreachable, unioned with any live device not
+        yet cataloged. De-duplicated."""
+        options: set[str] = set()
+        for entry in self._tx_catalog.values():
+            dev_name = entry["name"]
+            for ch_name in entry["tx_channels"].values():
+                options.add(f"{dev_name} - {ch_name}")
         if self.data:
             for dev_name, dev_data in self.data.items():
-                for _num, ch_data in dev_data.get("tx_channels", {}).items():
-                    options.append(f"{dev_name} - {ch_data['name']}")
+                for ch_data in dev_data.get("tx_channels", {}).values():
+                    options.add(f"{dev_name} - {ch_data['name']}")
         return sorted(options)
+
+    def resolve_tx_channel_name(
+        self, tx_device_name: str, tx_channel_num: int
+    ) -> str | None:
+        """Resolve a TX channel number to its name for a device using the
+        persistent catalog, so the add_subscription service can route to a source
+        that is not currently live."""
+        for entry in self._tx_catalog.values():
+            if entry["name"] == tx_device_name:
+                return entry["tx_channels"].get(tx_channel_num)
+        return None
 
     def get_all_aes67_sources(self) -> list[str]:
         """Get all AES67 streams as individual channel options."""
