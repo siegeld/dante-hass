@@ -141,6 +141,7 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 dev_data["tx_channels"][num] = {
                     "name": ch.name,
                     "number": ch.number,
+                    "friendly_name": ch.friendly_name,
                 }
 
         if device.subscriptions:
