@@ -24,6 +24,15 @@ follow-up so the two compose correctly.
   Resolution now reads the persistent catalog instead, which also carries each
   channel's `friendly_name`. New `DanteDataUpdateCoordinator.resolve_tx_option()`.
 
+- **Setting an RX subscription no longer blocks on a full coordinator refresh.**
+  `async_select_option` awaited `async_request_refresh()`, which re-polls every
+  device on the Dante network -- measured at **10.3s** cold. An automation
+  setting several RX channels in sequence paid that per call. The refresh now
+  runs as a background task; the optimistic `_pending_option` already reflects
+  the new state immediately. The sample-rate select deliberately keeps its
+  awaited refresh: it has no optimistic state, so backgrounding it would leave
+  the UI showing a stale rate. (from #2)
+
 ### Added
 - `dante.add_subscription` accepts an optional `tx_channel_name` to route to a
   transmitter that has not been seen yet.

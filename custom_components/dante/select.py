@@ -95,6 +95,11 @@ class DanteSampleRateSelect(DanteEntity, SelectEntity):
 
         try:
             await device.set_sample_rate(rate)
+            # Deliberately awaited, unlike the subscription selects: this entity
+            # has no optimistic _pending_option, so current_option reads polled
+            # data. Backgrounding the refresh would leave the UI showing the old
+            # rate until the next poll. Changing sample rate is rare, so paying
+            # the refresh here is the right trade.
             await self.coordinator.async_request_refresh()
         except Exception as err:
             LOGGER.error(
@@ -274,7 +279,15 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
                 await device.remove_subscription(rx_ch)
                 self._pending_option = SUBSCRIPTION_NONE
                 self.async_write_ha_state()
-                await self.coordinator.async_request_refresh()
+                # Don't block the service call on a refresh. A cold coordinator
+                # refresh re-polls every device on the Dante network and takes
+                # ~10s (measured); an automation setting several RX channels in
+                # sequence paid that per call. _pending_option above already
+                # shows the new state, and the regular poll plus
+                # _handle_coordinator_update give eventual consistency.
+                self.hass.async_create_task(
+                    self.coordinator.async_request_refresh()
+                )
             except Exception as err:
                 LOGGER.error(
                     "Failed to remove subscription on %s ch %s: %s",
@@ -359,8 +372,11 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
             # Optimistically update state immediately (don't block on refresh)
             self._pending_option = option
             self.async_write_ha_state()
-            # Background refresh for eventual consistency
-            await self.coordinator.async_request_refresh()
+            # Background refresh for eventual consistency -- deliberately not
+            # awaited, see the remove path above.
+            self.hass.async_create_task(
+                self.coordinator.async_request_refresh()
+            )
         except Exception as err:
             LOGGER.error(
                 "Failed to add subscription on %s ch %s: %s",
