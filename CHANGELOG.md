@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.2.0] - 2026-08-31
 
 Contributed fixes for RX subscription routing (thanks @salanki), plus a
 follow-up so the two compose correctly.
