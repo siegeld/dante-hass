@@ -8,28 +8,32 @@
   and restored *before* the first refresh, so the first poll reaches every
   previously-known device by direct unicast. This matches the coordinator's own
   design -- mDNS is only how a device is *discovered*; once known it is polled by
-  unicast -- and makes startup independent of multicast timing.
+  unicast -- and makes startup independent of discovery timing.
 
-  Root cause: on a multi-homed host, outgoing mDNS *queries* do not necessarily
-  reach the audio VLAN. Measured from inside the HA container, browsing the four
-  `_netaudio._udp` service types: bound to the audio VLAN -> **142 services in
-  under 2s**; bound to the main LAN, or on the default all-interfaces choice ->
-  **0**. The integration therefore often learned about devices only from their
-  unsolicited periodic announcements. Observed live: a browser reporting
-  "0 services found initially" followed by no discovery callbacks for 2m14s,
-  where a reload found 142 instantly. It is intermittent -- a later boot found
-  only 35 of 142 -- and worse under the load of a long HA bootstrap, which is
-  exactly when the integration sets up.
+  Root cause: the mDNS browse is unreliable **during Home Assistant's startup
+  window**, not because of interface binding. The integration sets up early in
+  the bootstrap and browses for 15s while hundreds of integrations initialize.
+  Observed on a host whose bootstrap takes 402s: one boot's browse reported
+  `0 services found initially` and produced no discovery callbacks for 2m14s;
+  another found 35 of 142. A config-entry reload against the *same* shared
+  zeroconf instance, once HA had settled, found 142 instantly.
 
-  With the registry restored, a boot that discovered only 35 services still had
-  all 106 RX entities available 58s after start, while HA was still 6 minutes
-  from finishing its own bootstrap.
+  Interface binding was investigated and ruled out: browsing the four
+  `_netaudio._udp` types on the adapters HA is configured to use returns all 142
+  services in under 2s. (An earlier draft of this note blamed multicast interface
+  selection. That was wrong -- it came from a test using python-zeroconf's bare
+  `Zeroconf()`, whose default is the default interface only, which is not what
+  Home Assistant uses.)
+
+  With the registry restored, a boot whose browse found only 35 services still
+  had all 106 RX entities available 58s after start, while HA was still six
+  minutes from finishing its own bootstrap.
 
   The store is written at most once per poll cycle and only when the registry
-  actually changed. A stale entry is self-correcting: the existing
-  `DEVICE_MISS_LIMIT` logic purges a device that has gone away, and mDNS still
-  fixes a changed IP. A corrupt or unreadable store is logged and ignored, never
-  blocking setup.
+  actually changed (device added, IP changed, display name resolved, or purged).
+  A stale entry is self-correcting: the existing `DEVICE_MISS_LIMIT` logic purges
+  a device that has gone away, and mDNS still fixes a changed IP. A corrupt or
+  unreadable store is logged and ignored, never blocking setup.
 
 ## [1.2.0] - 2026-08-31
 

@@ -72,10 +72,12 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # The registry is PERSISTED across restarts. mDNS is only how a device is
         # *discovered*; once known it is polled by direct unicast, so a restart
         # does not need mDNS at all to bring entities back. Without this, a cold
-        # start waits for the devices' next unsolicited announcement round --
-        # multicast *queries* on a multi-homed host go out one interface and may
-        # never reach the audio VLAN, which left the integration with zero
-        # entities for minutes after every restart.
+        # start depends on a browse that runs early in HA's bootstrap, while the
+        # event loop is saturated setting up every other integration -- observed
+        # returning 0 of 142 services on one boot and 35 on another, where the
+        # same shared zeroconf instance returns 142 in under 2s once HA has
+        # settled. That left the integration with no entities for minutes after
+        # every restart.
         self._store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._known_devices_dirty = False
         # Persistent mDNS browser state
