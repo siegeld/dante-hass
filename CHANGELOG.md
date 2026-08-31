@@ -1,5 +1,38 @@
 # Changelog
 
+## [Unreleased]
+
+Contributed fixes for RX subscription routing (thanks @salanki), plus a
+follow-up so the two compose correctly.
+
+### Fixed
+- **RX selects no longer go "unknown" when a TX device's friendly channel names
+  differ from its canonical ones** (#1). Autonomic media servers report a
+  subscription's channel as `Left`/`Right` while a direct query names the same
+  channels `01`/`02`, so the state string matched no option. `current_option`
+  now resolves the friendly name back to the canonical one.
+- **Routing an RX channel no longer requires the TX source to be reachable
+  over control** (#3). The on-wire subscribe command is built purely from the
+  RX channel number and the TX device/channel name strings, so only the
+  *receiver* must be live. A persistent `_tx_catalog` keeps a source's options
+  available across a transient control-poll outage (previously the options
+  vanished after `DEVICE_MISS_LIMIT` misses and HA rejected a still-valid
+  option), and `add_subscription_by_name()` routes without a live TX object.
+- **Friendly-name resolution now survives that same outage.** As merged, #1
+  resolved friendly names from live coordinator data — the very data #3 exists
+  because it disappears — so a purged Autonomic source went back to "unknown".
+  Resolution now reads the persistent catalog instead, which also carries each
+  channel's `friendly_name`. New `DanteDataUpdateCoordinator.resolve_tx_option()`.
+
+### Added
+- `dante.add_subscription` accepts an optional `tx_channel_name` to route to a
+  transmitter that has not been seen yet.
+
+### Notes
+- TX options are now de-duplicated, and persist for the coordinator's lifetime:
+  a source removed from the network keeps its options until the integration is
+  reloaded. This matches how AES67 stream options already behave.
+
 ## [1.1.1] - 2026-08-28
 
 Verification method challenged and **confirmed by experiment**; second teardown

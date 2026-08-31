@@ -199,15 +199,14 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
                     option = f"{tx_dev} - {tx_ch}"
                     if option in self.options:
                         return option
-                    tx_dev_data = (
-                        self.coordinator.data.get(tx_dev) if self.coordinator.data else None
-                    )
-                    if tx_dev_data:
-                        for _num, ch_data in tx_dev_data.get("tx_channels", {}).items():
-                            if ch_data.get("friendly_name") == tx_ch:
-                                return f"{tx_dev} - {ch_data['name']}"
-                            if ch_data.get("name") == tx_ch:
-                                return option
+                    # The subscription may report a friendly channel name while
+                    # the option pool uses the canonical one. Resolve via the
+                    # coordinator catalog, not live data -- the source may be
+                    # transiently unreachable, which is exactly when the old
+                    # live-data lookup failed and the entity went "unknown".
+                    resolved = self.coordinator.resolve_tx_option(tx_dev, tx_ch)
+                    if resolved:
+                        return resolved
                     return option
         return SUBSCRIPTION_NONE
 

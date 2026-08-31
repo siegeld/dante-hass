@@ -433,7 +433,11 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._tx_catalog[server_name] = {
                 "name": dev_name,
                 "tx_channels": {
-                    num: ch["name"] for num, ch in tx_channels.items()
+                    num: {
+                        "name": ch["name"],
+                        "friendly_name": ch.get("friendly_name"),
+                    }
+                    for num, ch in tx_channels.items()
                 },
             }
 
@@ -446,8 +450,8 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         options: set[str] = set()
         for entry in self._tx_catalog.values():
             dev_name = entry["name"]
-            for ch_name in entry["tx_channels"].values():
-                options.add(f"{dev_name} - {ch_name}")
+            for ch in entry["tx_channels"].values():
+                options.add(f"{dev_name} - {ch['name']}")
         if self.data:
             for dev_name, dev_data in self.data.items():
                 for ch_data in dev_data.get("tx_channels", {}).values():
@@ -462,7 +466,30 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         that is not currently live."""
         for entry in self._tx_catalog.values():
             if entry["name"] == tx_device_name:
-                return entry["tx_channels"].get(tx_channel_num)
+                ch = entry["tx_channels"].get(tx_channel_num)
+                return ch["name"] if ch else None
+        return None
+
+    def resolve_tx_option(
+        self, tx_device_name: str, tx_channel_name: str
+    ) -> str | None:
+        """Map a subscription-reported TX channel name to its canonical
+        'Device - Channel' option string.
+
+        A device may report a channel's friendly name in the subscription (e.g.
+        "Left") while the option pool is built from the canonical name (e.g.
+        "01") -- Autonomic media servers do this. Resolution reads the persistent
+        catalog rather than live data so it still works while the source is
+        transiently unreachable, which is the case the catalog exists for."""
+        for entry in self._tx_catalog.values():
+            if entry["name"] != tx_device_name:
+                continue
+            for ch in entry["tx_channels"].values():
+                if ch.get("friendly_name") == tx_channel_name:
+                    return f"{tx_device_name} - {ch['name']}"
+            for ch in entry["tx_channels"].values():
+                if ch["name"] == tx_channel_name:
+                    return f"{tx_device_name} - {ch['name']}"
         return None
 
     def get_all_aes67_sources(self) -> list[str]:
