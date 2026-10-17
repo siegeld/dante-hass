@@ -7,6 +7,7 @@ import re
 import select as sel
 import socket
 import struct
+import threading
 import time
 from typing import Any
 
@@ -16,6 +17,7 @@ from typing import Any
 _SUBCHANNEL_NAME_RE = re.compile(r"^\d+@")
 
 from homeassistant.components import zeroconf
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import (
@@ -26,7 +28,7 @@ from homeassistant.helpers.update_coordinator import (
 from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo
 
-from .const import DOMAIN, LOGGER, MDNS_RESOLVE_TIMEOUT_MS, MDNS_TIMEOUT, DEVICE_MISS_LIMIT, SAP_MULTICAST, SAP_PORT, SAP_TIMEOUT, SCAN_INTERVAL
+from .const import DOMAIN, LOGGER, MDNS_RESOLVE_TIMEOUT_MS, MDNS_TIMEOUT, DEVICE_MISS_LIMIT, SAP_MULTICAST, SAP_PORT, SAP_SELECT_SLICE, SAP_TIMEOUT, SCAN_INTERVAL
 from .netaudio.const import SERVICE_CMC, SERVICES
 from .netaudio.device import DanteDevice
 
@@ -53,6 +55,15 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             update_interval=timedelta(seconds=SCAN_INTERVAL),
         )
         self._devices: dict = {}
+        # Set on HA shutdown so blocking executor work (SAP discovery) can bail
+        # out promptly instead of holding a non-daemonic thread past shutdown.
+        # Without this, _discover_sap_streams sits in select() for up to
+        # SAP_TIMEOUT and HA exits dirty with "Found N non-daemonic threads",
+        # which the container wrapper turns into exit code 100.
+        self._stop = threading.Event()
+        hass.bus.async_listen_once(
+            EVENT_HOMEASSISTANT_STOP, lambda _event: self._stop.set()
+        )
         self._aes67_streams: dict[str, Any] = {}
         # Local AES67 selections keyed by (device_name, rx_channel_num)
         self._aes67_selections: dict[tuple[str, int], str] = {}
@@ -164,7 +175,14 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     async def async_stop_browser(self) -> None:
-        """Stop the persistent mDNS browser."""
+        """Stop the mDNS browser and signal blocking work to stop.
+
+        Called from async_unload_entry, so this is the unload/reload path as
+        well as part of shutdown. A reload builds a fresh coordinator with its
+        own event, so latching _stop here only ever retires THIS instance's
+        in-flight executor work.
+        """
+        self._stop.set()
         if self._browser is not None:
             await self._browser.async_cancel()
             self._browser = None
@@ -359,6 +377,16 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             result: dict[str, Any] = {}
 
             for server_name, known_info in list(self._known_devices.items()):
+                # Each device below runs a blocking unicast query in an executor
+                # thread. Once HA is stopping, do not queue any more of them --
+                # with ~20 known devices this loop was the other half of the
+                # "non-daemonic threads at shutdown" problem.
+                if self._stop.is_set():
+                    LOGGER.debug(
+                        "Dante poll: shutdown requested, skipping %d remaining devices",
+                        len(self._known_devices) - len(result),
+                    )
+                    break
                 device = DanteDevice(server_name=server_name)
                 device.ipv4 = known_info["ipv4"]
 
@@ -448,7 +476,7 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Discover AES67/SAP streams
             bind_ip = self._find_bind_ip(result)
             LOGGER.debug("SAP: bind_ip=%s from %d devices", bind_ip, len(result))
-            if bind_ip:
+            if bind_ip and not self._stop.is_set():
                 try:
                     new_streams = await self.hass.async_add_executor_job(
                         self._discover_sap_streams, bind_ip
@@ -621,11 +649,16 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             streams: dict[str, Any] = {}
             deadline = time.monotonic() + SAP_TIMEOUT
 
-            while True:
+            while not self._stop.is_set():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
-                ready, _, _ = sel.select([sock], [], [], min(remaining, 1.0))
+                # Cap the wait so shutdown is noticed within SAP_SELECT_SLICE
+                # rather than up to SAP_TIMEOUT. select() cannot be interrupted,
+                # so the slice length IS the worst-case shutdown delay.
+                ready, _, _ = sel.select(
+                    [sock], [], [], min(remaining, SAP_SELECT_SLICE)
+                )
                 if not ready:
                     continue
                 try:
@@ -633,8 +666,9 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     stream = self._parse_sap_packet(data)
                     if stream:
                         streams[stream["session_name"]] = stream
-                except Exception:
-                    pass
+                except Exception as err:  # noqa: BLE001 - one bad packet must not
+                    # abort the listen window, but silence hid real faults here.
+                    LOGGER.debug("SAP: discarding unparseable packet: %s", err)
 
             return streams
         finally:

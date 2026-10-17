@@ -51,3 +51,8 @@ SUBSCRIPTION_NONE = "None"
 SAP_MULTICAST = "239.255.255.255"
 SAP_PORT = 9875
 SAP_TIMEOUT = 10.0  # seconds to listen for SAP announcements
+# Longest a single select() may block inside the SAP listen loop. select() is
+# not interruptible, so this value is the worst-case delay between HA asking to
+# stop and the discovery thread actually returning. Keep it well under HA's
+# executor shutdown grace or the thread is still running at exit.
+SAP_SELECT_SLICE = 0.5

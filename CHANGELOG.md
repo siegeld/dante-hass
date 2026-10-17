@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.2.2] - 2026-10-17
+
+### Fixed
+- **Home Assistant no longer exits dirty because of this integration.** Every HA
+  shutdown ended in `Found 5 non-daemonic threads` with a `SystemExit`
+  traceback out of `_discover_sap_streams`, and the container wrapper turned
+  that into `exit code 100` -- which s6 reads as "restart me". So a single
+  restart request became a slow, messy restart, and the dirty exit was
+  indistinguishable in the logs from a crash.
+- Root cause: two blocking executor jobs with no way to be interrupted.
+  `select()` cannot be cancelled, so the SAP listen loop held a worker thread
+  for up to `SAP_TIMEOUT` (10s) after HA asked to stop; and the PHASE 3 poll
+  loop kept queueing a fresh blocking unicast query per known device (~20 here)
+  while shutdown was already underway.
+- The coordinator now owns a `threading.Event` set on `EVENT_HOMEASSISTANT_STOP`
+  (and on unload, via `async_stop_browser`), checked in four places: the SAP
+  loop condition, before queueing SAP discovery at all, and at the top of the
+  per-device poll loop. The SAP `select()` wait is also capped by the new
+  `SAP_SELECT_SLICE` (0.5s) instead of 1.0s -- since `select()` is
+  uninterruptible, that slice IS the worst-case shutdown delay, so it is now
+  0.5s rather than 10s.
+
+### Changed
+- A SAP packet that fails to parse is logged at debug instead of being swallowed
+  by a bare `except Exception: pass`. One bad packet still must not abort the
+  listen window, but the silence was hiding real faults.
+
 ## [1.2.1] - 2026-08-31
 
 ### Fixed
