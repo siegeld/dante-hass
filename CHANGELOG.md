@@ -27,6 +27,31 @@
   by a bare `except Exception: pass`. One bad packet still must not abort the
   listen window, but the silence was hiding real faults.
 
+### Verified
+Measured on harbr2 across two `homeassistant.restart` cycles (the first loads
+this code, the second exercises it -- custom components are only imported at
+startup, so the restart that installs a fix can never also test it):
+
+| shutdown signature | before | after |
+| --- | --- | --- |
+| `Thread[...] is still running at shutdown` | 1 | 0 |
+| `SystemExit` | 1 | 0 |
+| `_discover_sap_streams` frames | 2 | 0 |
+| `custom_components/dante` frames | 3 | 0 |
+
+Worth recording: the dirty shutdown on the *first* cycle was held by
+`SyncWorker_19` running `netaudio ... subscription status` -- the PHASE 3 device
+poll, NOT the SAP loop that the original traceback named. Fixing only the
+function in the traceback would have left the bug in place.
+
+Not fixed by this release, and not ours: HA still logs `Found 5 non-daemonic
+threads` and shutdown still takes ~40s. Those belong to `pyhik.hikvision`
+(a long-lived non-daemon `alert_stream` thread) and to three ESPHome
+`Timeout waiting for DisconnectResponse after 10.0s` handshakes, which now
+dominate the shutdown. Also note `exit code 100` is the container wrapper's
+*correct* "restart me" signal, not a fault -- the defect was the thread state
+and traceback accompanying it.
+
 ## [1.2.1] - 2026-08-31
 
 ### Fixed
