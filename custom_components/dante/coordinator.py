@@ -29,7 +29,7 @@ from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo
 
 from .const import DOMAIN, LOGGER, MDNS_RESOLVE_TIMEOUT_MS, MDNS_TIMEOUT, DEVICE_MISS_LIMIT, SAP_MULTICAST, SAP_PORT, SAP_SELECT_SLICE, SAP_TIMEOUT, SCAN_INTERVAL
-from .discovery import RoutingDiscoveryRecovery, has_routing_service
+from .discovery import ARC_RECOVERY_GIVE_UP, RoutingDiscoveryRecovery, has_routing_service
 from .netaudio.const import SERVICE_CMC, SERVICES
 from .netaudio.device import DanteDevice
 
@@ -412,6 +412,13 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     dev_name = known_info.get("dev_name", server_name)
                     self._devices.pop(dev_name, None)
                     self._cached_data.pop(dev_name, None)
+                    if self._routing_recovery.has_expired(server_name):
+                        LOGGER.warning(
+                            "Device %s has had no ARC routing service for %ds, removing",
+                            server_name, ARC_RECOVERY_GIVE_UP,
+                        )
+                        self._known_devices.pop(server_name, None)
+                        self._known_devices_dirty = True
                     continue
                 device = DanteDevice(server_name=server_name)
                 device.ipv4 = known_info["ipv4"]

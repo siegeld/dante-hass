@@ -214,3 +214,57 @@ async def test_updated_service_event_can_restore_browse_tracking(setup_coordinat
     name = f"Amp.{SERVICE_ARC}"
     coordinator._on_service_state_change(SERVICE_ARC, name, ServiceStateChange.Updated)
     assert coordinator._discovered_services[name] == SERVICE_ARC
+
+
+@pytest.mark.asyncio
+async def test_unrecovered_device_expires_and_recovered_one_does_not(monkeypatch):
+    now = 0.0
+    monkeypatch.setattr(discovery.time, "monotonic", lambda: now)
+    monkeypatch.setattr(
+        discovery, "AsyncServiceInfo", Mock(return_value=resolved_info(success=False))
+    )
+    recovery = discovery.RoutingDiscoveryRecovery()
+    devices = {"Gone": incomplete("Gone")}
+
+    await recovery.async_recover(object(), devices, {})
+    now = discovery.ARC_RECOVERY_GIVE_UP - 1
+    await recovery.async_recover(object(), devices, {})
+    assert not recovery.has_expired("Gone")
+    now = discovery.ARC_RECOVERY_GIVE_UP
+    assert recovery.has_expired("Gone")
+
+    # Recovery success clears the clock.
+    now += discovery.ARC_RECOVERY_INTERVAL
+    monkeypatch.setattr(
+        discovery, "AsyncServiceInfo", Mock(return_value=resolved_info())
+    )
+    await recovery.async_recover(object(), devices, {})
+    assert not recovery.has_expired("Gone")
+
+
+@pytest.mark.asyncio
+async def test_coordinator_removes_device_after_recovery_gives_up(
+    monkeypatch,
+    setup_coordinator,
+):
+    now = 0.0
+    monkeypatch.setattr(discovery.time, "monotonic", lambda: now)
+    monkeypatch.setattr(
+        discovery, "AsyncServiceInfo", Mock(return_value=resolved_info(success=False))
+    )
+    query = AsyncMock()
+    monkeypatch.setattr(coordinator_module.DanteDevice, "get_controls", query)
+    coordinator = setup_coordinator()
+    coordinator._known_devices["Gone"] = incomplete("Gone")
+
+    await coordinator._async_update_data()
+    now = discovery.ARC_RECOVERY_GIVE_UP - 1
+    await coordinator._async_update_data()
+    assert "Gone" in coordinator._known_devices
+
+    now = discovery.ARC_RECOVERY_GIVE_UP
+    await coordinator._async_update_data()
+    assert "Gone" not in coordinator._known_devices
+    query.assert_not_awaited()
+    stored = coordinator._store.async_save.call_args.args[0]
+    assert "Gone" not in stored["devices"]

@@ -16,6 +16,11 @@ LOGGER = logging.getLogger(__name__)
 ARC_RECOVERY_INTERVAL = 60.0
 ARC_RECOVERY_TIMEOUT_MS = 3000
 ARC_RECOVERY_BATCH_SIZE = 4
+# A record that stays ARC-less this long is dropped from the known-device
+# registry. Without a cap, a decommissioned or renamed device whose record
+# lacks ARC would be retried every minute forever, since it never consumes
+# the unicast miss budget. A live device comes back through normal discovery.
+ARC_RECOVERY_GIVE_UP = 3600.0
 
 
 def has_routing_service(device: dict[str, Any]) -> bool:
@@ -33,6 +38,12 @@ class RoutingDiscoveryRecovery:
 
     def __init__(self) -> None:
         self._last_attempt: dict[str, float] = {}
+        self._missing_since: dict[str, float] = {}
+
+    def has_expired(self, name: str) -> bool:
+        """Whether recovery has failed for longer than ARC_RECOVERY_GIVE_UP."""
+        since = self._missing_since.get(name)
+        return since is not None and time.monotonic() - since >= ARC_RECOVERY_GIVE_UP
 
     async def async_recover(
         self,
@@ -51,12 +62,15 @@ class RoutingDiscoveryRecovery:
             for name, info in devices.items()
             if not has_routing_service(info)
         }
+        now = time.monotonic()
         self._last_attempt = {
             name: attempted
             for name, attempted in self._last_attempt.items()
             if name in missing
         }
-        now = time.monotonic()
+        self._missing_since = {
+            name: self._missing_since.get(name, now) for name in missing
+        }
         candidates = sorted(
             (
                 name
@@ -104,6 +118,7 @@ class RoutingDiscoveryRecovery:
             device.setdefault("props", {}).update(props)
             discovered_services[service_name] = SERVICE_ARC
             self._last_attempt.pop(name, None)
+            self._missing_since.pop(name, None)
             LOGGER.info(
                 "Recovered Dante routing endpoint for %s at %s:%s",
                 name,
