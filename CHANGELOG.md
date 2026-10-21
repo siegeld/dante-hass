@@ -1,8 +1,33 @@
 # Changelog
 
-## [Unreleased]
+## [1.3.0] - 2026-10-21
+
+Merges community PRs #4 and #5 (thanks @salanki), plus the two fixes that make
+them safe together.
+
+### Added
+- **Recovery of incomplete ARC discovery** (PR #4). When mDNS reports a device
+  through CMC/DBC but misses its ARC routing service, the integration resolves
+  the ARC record explicitly (advertised port, IPv4 only, at most four devices
+  per poll, 3s timeout, once per device per minute) instead of polling a device
+  it cannot address. Until recovery succeeds the device's entities are
+  unavailable and no unicast miss is counted. mDNS `Updated` events are now
+  accepted alongside `Added`.
+- **Unit tests run in CI** (PRs #4/#5): a `tests` job in `validate.yml` with
+  `tests/requirements.txt`.
 
 ### Fixed
+- **Known devices whose ARC record never recovers are expired after an hour.**
+  PR #4 stops ARC-less records from consuming the miss budget, which left
+  nothing to ever remove them: a decommissioned or renamed device would be
+  retried every minute forever. `ARC_RECOVERY_GIVE_UP` (3600s) now drops it from
+  the registry; a live device comes back through normal discovery.
+- **Stored channel aliases are dropped when the registry loads.** A store
+  written by 1.2.1 can already hold `Left@Kitchen`-style aliases. Without this,
+  they were restored and polled until the miss limit expired them -- and with
+  PR #4's no-miss rule for ARC-less records, they would never have expired.
+- `tests/test_aes67_frames.py` imports the coordinator as a package again; on
+  1.2.2 the whole suite failed at collection with a relative-import error.
 - Filter friendly per-channel mDNS names such as `Left@Kitchen` and
   `Right@Office` alongside numeric names such as `01@Kitchen`. These aliases
   are not controllable devices; resolving and polling them caused repeated

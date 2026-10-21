@@ -82,7 +82,10 @@ port (including nonstandard software-device ports), retries each incomplete
 device at most once per minute, and resolves at most four devices concurrently
 per poll with a three-second timeout. Incomplete discovery is logged separately
 from control-query failures; affected entities remain unavailable until a real
-control query succeeds. No routing commands are sent by discovery recovery.
+control query succeeds. A record whose ARC service still has not been recovered
+after an hour is dropped from the known-device registry; if the device is still
+on the network it returns through normal discovery. No routing commands are sent
+by discovery recovery.
 
 Dante uses mDNS (multicast DNS) for device discovery. If your Dante devices are on a dedicated audio VLAN:
 
