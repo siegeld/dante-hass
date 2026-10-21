@@ -50,3 +50,21 @@ async def test_first_install_still_waits_for_browse(monkeypatch, setup_coordinat
 
     sleep.assert_awaited_once_with(coordinator_module.MDNS_TIMEOUT * 3)
     assert coordinator._browser_ready.is_set()
+
+
+@pytest.mark.asyncio
+async def test_first_poll_skips_sap_and_later_polls_run_it(
+    monkeypatch, setup_coordinator
+):
+    coordinator = setup_coordinator()
+    coordinator._browser_ready.set()
+    monkeypatch.setattr(coordinator._store, "async_save", AsyncMock())
+    monkeypatch.setattr(coordinator, "_find_bind_ip", lambda _: "192.0.2.1")
+    sap = Mock(return_value={})
+    monkeypatch.setattr(coordinator, "_discover_sap_streams", sap)
+
+    await coordinator._async_update_data()
+    sap.assert_not_called()
+
+    await coordinator._async_update_data()
+    sap.assert_called_once_with("192.0.2.1")

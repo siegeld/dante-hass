@@ -63,6 +63,9 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # SAP_TIMEOUT and HA exits dirty with "Found N non-daemonic threads",
         # which the container wrapper turns into exit code 100.
         self._stop = threading.Event()
+        # The first poll runs inside config-entry setup, during HA's bootstrap;
+        # entities do not exist until it returns. See _async_update_data.
+        self._first_poll = True
         hass.bus.async_listen_once(
             EVENT_HOMEASSISTANT_STOP, lambda _event: self._stop.set()
         )
@@ -288,6 +291,7 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         A device is only removed after DEVICE_MISS_LIMIT consecutive direct
         query failures.
         """
+        poll_started = time.monotonic()
         try:
             # Wait for browser to be ready (only blocks on first poll)
             await asyncio.wait_for(self._browser_ready.wait(), timeout=MDNS_TIMEOUT * 4)
@@ -403,6 +407,7 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._known_devices_dirty = True
 
             # --- PHASE 3: Query ALL known devices by direct unicast ---
+            phase3_started = time.monotonic()
             result: dict[str, Any] = {}
 
             for server_name, known_info in list(self._known_devices.items()):
@@ -518,10 +523,15 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Update cache with current results
             self._cached_data.update(result)
 
-            # Discover AES67/SAP streams
+            # Discover AES67/SAP streams. Not on the first poll: SAP is a fixed
+            # SAP_TIMEOUT listen, and the first poll holds entity setup. The
+            # stream table only adds AES67 sources, so the next poll fills it.
+            phase3_secs = time.monotonic() - phase3_started
             bind_ip = self._find_bind_ip(result)
             LOGGER.debug("SAP: bind_ip=%s from %d devices", bind_ip, len(result))
-            if bind_ip and not self._stop.is_set():
+            if self._first_poll:
+                LOGGER.debug("SAP: skipped on the first poll")
+            elif bind_ip and not self._stop.is_set():
                 try:
                     new_streams = await self.hass.async_add_executor_job(
                         self._discover_sap_streams, bind_ip
@@ -545,6 +555,15 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._reconcile_aes67_subscriptions(result)
 
             await self._async_save_known_devices()
+
+            if self._first_poll:
+                self._first_poll = False
+                LOGGER.info(
+                    "First Dante poll: %d of %d devices answered in %.1fs "
+                    "(device queries %.1fs)",
+                    len(result), len(self._known_devices),
+                    time.monotonic() - poll_started, phase3_secs,
+                )
 
             return result
 

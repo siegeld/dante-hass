@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.3.2] - 2026-10-21
+
+### Fixed
+- **The first poll no longer runs SAP discovery.** 1.3.1 removed the browse
+  wait, but the entities still appeared 116s after setup began: the first poll
+  itself runs inside config-entry setup during HA's bootstrap, and it included
+  the SAP listen -- a fixed `SAP_TIMEOUT` (10s) executor job, which is 10.2s of
+  a normal 10.45s poll (all 21 device queries take ~0.2s). Under bootstrap's
+  executor and event-loop contention that stretches much further. The SAP
+  stream table only adds AES67 sources to the selects, so the next poll (30s
+  later) fills it.
+- The first poll logs one INFO line with its duration and the device-query
+  share, so a slow startup is measurable without enabling debug logging.
+
 ## [1.3.1] - 2026-10-21
 
 ### Fixed
