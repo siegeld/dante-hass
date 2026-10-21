@@ -95,8 +95,7 @@ Dante uses mDNS (multicast DNS) for device discovery. If your Dante devices are 
 
 ## Credits
 
-Built on the [netaudio](https://github.com/chris-ritsen/network-audio-controller) library by Chris Ritsen (vendored and adapted for HA compatibility).
-
+Built on the [netaudio](https://github.com/chris-ritsen/network-audio-controller) library by Chris Ritsen (vendored and adapted for HA compatibility; released by its author under the [Unlicense](https://unlicense.org/)).
 
 ## Verifying an AES67 subscription
 
@@ -121,3 +120,7 @@ not populate `tx_device_name` -- so its absence from the subscription list is no
 evidence that no flow is running.
 
 See `CLAUDE.md` for the protocol notes and the war stories behind these.
+
+## License
+
+MIT -- see [LICENSE](LICENSE).
