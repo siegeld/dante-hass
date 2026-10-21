@@ -11,10 +11,10 @@ import threading
 import time
 from typing import Any
 
-# Matches per-channel virtual sub-device mDNS names like "01@danterbr11-villa-tascom"
-# or "32@danterbr7-theater-mixer". These are Dante channel announcements, not
-# real devices, and never respond to unicast control queries.
-_SUBCHANNEL_NAME_RE = re.compile(r"^\d+@")
+# Matches numeric and friendly per-channel mDNS names, such as "01@Kitchen"
+# and "Left@Kitchen". These are channel announcements, not controllable devices.
+# Match only the instance label before the first dot, not later DNS labels.
+_SUBCHANNEL_NAME_RE = re.compile(r"^[^.]+@")
 
 from homeassistant.components import zeroconf
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
@@ -288,8 +288,8 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     LOGGER.debug("Error resolving %s: %s", name, err)
                     return None
 
-            # Skip per-channel virtual sub-device announcements (e.g.
-            # "01@danterbr11-villa-tascom"). These are mDNS-only artifacts
+            # Skip numeric and friendly per-channel announcements (e.g.
+            # "01@Kitchen" and "Left@Kitchen"). These are mDNS-only artifacts
             # that never respond to unicast Dante control queries — adding
             # them just churns the known-devices registry and spams the
             # log with "unreachable" warnings every DEVICE_MISS_LIMIT cycles.

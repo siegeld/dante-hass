@@ -10,9 +10,7 @@ selector at offset 96 and the tail 8 bytes late, and it silently failed on
 newer hardware while appearing to succeed. Do not change the builders without
 re-running this.
 """
-import struct, socket, sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "custom_components", "dante"))
-from coordinator import DanteDataUpdateCoordinator as C
+from custom_components.dante.coordinator import DanteDataUpdateCoordinator as C
 
 CTRL_SUB_CH1 = bytes.fromhex(
     "272900680698320100000101001082040000020200000000000000000001000200010060002a002c0030"

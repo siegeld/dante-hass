@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Filter friendly per-channel mDNS names such as `Left@Kitchen` and
+  `Right@Office` alongside numeric names such as `01@Kitchen`. These aliases
+  are not controllable devices; resolving and polling them caused repeated
+  eleven-cycle unreachable warnings and known-device registry churn.
+
 ## [1.2.2] - 2026-10-17
 
 ### Fixed
