@@ -76,6 +76,14 @@ Flash the LED on a device.
 
 ## Network Notes
 
+If discovery finds a device's name/IP but misses its ARC routing service, the
+integration explicitly resolves that service again. Recovery uses the advertised
+port (including nonstandard software-device ports), retries each incomplete
+device at most once per minute, and resolves at most four devices concurrently
+per poll with a three-second timeout. Incomplete discovery is logged separately
+from control-query failures; affected entities remain unavailable until a real
+control query succeeds. No routing commands are sent by discovery recovery.
+
 Dante uses mDNS (multicast DNS) for device discovery. If your Dante devices are on a dedicated audio VLAN:
 
 1. Ensure the HA host has an interface on that VLAN

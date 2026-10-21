@@ -29,6 +29,7 @@ from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo
 
 from .const import DOMAIN, LOGGER, MDNS_RESOLVE_TIMEOUT_MS, MDNS_TIMEOUT, DEVICE_MISS_LIMIT, SAP_MULTICAST, SAP_PORT, SAP_SELECT_SLICE, SAP_TIMEOUT, SCAN_INTERVAL
+from .discovery import RoutingDiscoveryRecovery, has_routing_service
 from .netaudio.const import SERVICE_CMC, SERVICES
 from .netaudio.device import DanteDevice
 
@@ -54,6 +55,7 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             name=DOMAIN,
             update_interval=timedelta(seconds=SCAN_INTERVAL),
         )
+        self._routing_recovery = RoutingDiscoveryRecovery()
         self._devices: dict = {}
         # Set on HA shutdown so blocking executor work (SAP discovery) can bail
         # out promptly instead of holding a non-daemonic thread past shutdown.
@@ -110,7 +112,7 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         **kwargs,
     ) -> None:
         """Handle mDNS service state changes from the persistent browser."""
-        if state_change is ServiceStateChange.Added:
+        if state_change in (ServiceStateChange.Added, ServiceStateChange.Updated):
             self._discovered_services[name] = service_type
         elif state_change is ServiceStateChange.Removed:
             self._discovered_services.pop(name, None)
@@ -380,6 +382,14 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 len(mdns_hosts), len(self._known_devices),
             )
 
+            # A CMC/DBC result may identify a device without its ARC service.
+            # Resolve the missing endpoint explicitly instead of retrying a
+            # protocol call that returns without sending a packet.
+            if await self._routing_recovery.async_recover(
+                aiozc.zeroconf, self._known_devices, self._discovered_services
+            ):
+                self._known_devices_dirty = True
+
             # --- PHASE 3: Query ALL known devices by direct unicast ---
             result: dict[str, Any] = {}
 
@@ -394,6 +404,15 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         len(self._known_devices) - len(result),
                     )
                     break
+                if not has_routing_service(known_info):
+                    # No query is possible yet. Keep the registry entry for
+                    # recovery, but expose unavailable rather than stale data.
+                    # Only actual control-query failures consume the miss budget.
+                    self._miss_count.pop(server_name, None)
+                    dev_name = known_info.get("dev_name", server_name)
+                    self._devices.pop(dev_name, None)
+                    self._cached_data.pop(dev_name, None)
+                    continue
                 device = DanteDevice(server_name=server_name)
                 device.ipv4 = known_info["ipv4"]
 
