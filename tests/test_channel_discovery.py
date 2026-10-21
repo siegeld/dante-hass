@@ -109,3 +109,21 @@ async def test_at_sign_after_instance_label_does_not_filter_device(
 
     resolver.assert_called_once_with(SERVICE_ARC, service_name)
     assert "Kitchen" in coordinator._known_devices
+
+
+@pytest.mark.asyncio
+async def test_stored_channel_aliases_are_dropped_on_load(setup_coordinator):
+    coordinator = setup_coordinator()
+    record = {"ipv4": "192.0.2.10", "services": {}, "props": {}}
+    coordinator._store.async_load = AsyncMock(
+        return_value={
+            "devices": {"Left@Kitchen": record, "01@Mixer": record, "Kitchen": record}
+        }
+    )
+
+    await coordinator.async_load_known_devices()
+
+    assert set(coordinator._known_devices) == {"Kitchen"}
+    await coordinator._async_save_known_devices()
+    stored = coordinator._store.async_save.call_args.args[0]
+    assert set(stored["devices"]) == {"Kitchen"}

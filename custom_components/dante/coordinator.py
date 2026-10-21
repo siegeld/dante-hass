@@ -133,6 +133,13 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for server_name, info in devices.items():
             if not isinstance(info, dict) or not info.get("ipv4"):
                 continue
+            # A store written before the friendly-alias filter can hold
+            # channel announcements ("Left@Kitchen"). Drop them here, or they
+            # are polled as devices until the miss limit expires them.
+            if _SUBCHANNEL_NAME_RE.match(server_name):
+                LOGGER.info("Dropping stored Dante channel alias %s", server_name)
+                self._known_devices_dirty = True
+                continue
             self._known_devices.setdefault(server_name, {
                 "ipv4": info["ipv4"],
                 "services": info.get("services") or {},
