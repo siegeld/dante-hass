@@ -3,6 +3,7 @@ import ipaddress
 import logging
 import random
 import socket
+import time
 import traceback
 
 from .channel import DanteChannel
@@ -121,11 +122,39 @@ class DanteDevice:
 
         binary_str = codecs.decode(command, "hex")
 
+        # An ARC-family reply echoes the request's sequence id and opcode at
+        # bytes 4:8. A reply that arrives after its request timed out stays
+        # queued on this socket, and taking "the next datagram" handed it to
+        # the NEXT request: an RX page parsed from a stale name reply minted
+        # junk channels (rx_25888 is b"e "). Discard anything that does not
+        # echo this request.
+        expect = (
+            binary_str[4:8]
+            if len(binary_str) >= 8 and binary_str[0] in (0x27, 0x28)
+            else None
+        )
+        timeout = sock.gettimeout()
+
         try:
             sock.send(binary_str)
-            response = sock.recvfrom(2048)[0]
+            deadline = time.monotonic() + (timeout or 1)
+            while True:
+                reply = sock.recvfrom(2048)[0]
+                if expect is None or reply[4:8] == expect:
+                    response = reply
+                    break
+                logger.debug(
+                    "Discarding stale reply %s (expected %s) from %s",
+                    reply[4:8].hex(), expect.hex(), self.name or self.server_name,
+                )
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                sock.settimeout(remaining)
         except TimeoutError:
             pass
+        finally:
+            sock.settimeout(timeout)
 
         return response
 

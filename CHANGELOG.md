@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.3.3] - 2026-10-21
+
+### Fixed
+- **Late replies no longer mint junk RX channels.** `dante_command` sent a
+  request and took the next datagram on the socket. A reply that missed its 1s
+  timeout stayed queued and was read as the answer to the following request, so
+  an RX-channel page could be parsed from a device-name reply. Each such restart
+  left permanent orphan entities -- `danterbr15-villa-mics` `rx_0` on
+  2026-10-18; `danterbr3-villa-sonos` `rx_0` and `rx_25888` (`0x6520`, the
+  bytes `"e "`) on 2026-10-21. ARC-family replies must now echo the request's
+  sequence id and opcode (bytes 4:8); anything else is discarded within the
+  same timeout. Verified beforehand that all 21 devices on the fabric echo
+  both. The orphaned entities were removed from the registry.
+
 ## [1.3.2] - 2026-10-21
 
 ### Fixed

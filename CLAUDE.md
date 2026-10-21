@@ -116,6 +116,18 @@ receiving a flow.
 protocol (Audinate-style 1..5 step). A device that does not report those fields
 has no software gain at all — attenuate upstream or at the sink instead.
 
+**8. A late reply is read as the answer to the NEXT request.** `dante_command`
+used to send, wait 1s, and take whatever datagram arrived next on the socket. A
+reply that missed its timeout (routine during HA's bootstrap, when the executor
+is saturated) stayed queued and was consumed by the following command on the
+same port -- so an RX-channel page was parsed out of a device-name reply and
+minted junk channels: `rx_0`, `rx_25888` (`0x6520` = `b"e "`). Those became
+permanent orphan entities after restarts on 2026-10-18 and 2026-10-21. Fixed in
+1.3.3: a reply must echo the request's sequence id + opcode (bytes 4:8) or it is
+discarded. All 21 devices on the fabric, Dante Via included, were checked to
+echo both before that rule went in. Same lesson as #1: match the echo, never
+"the next packet".
+
 ## Gotchas
 
 - **`update_before_add=True` breaks setup at scale** — it forces a full coordinator
