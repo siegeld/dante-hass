@@ -175,7 +175,19 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             SERVICES,
             handlers=[self._on_service_state_change],
         )
-        # Give devices time to respond on initial startup
+        if self._known_devices:
+            # The restored registry lets the first poll reach every known
+            # device by unicast, so do not hold setup for the browse: it fills
+            # in on later polls. This wait used to run during HA's bootstrap,
+            # when the event loop is starved -- the 15s sleep measured ~100s,
+            # and entities stayed stale for all of it.
+            self._browser_ready.set()
+            LOGGER.info(
+                "Persistent mDNS browser started; not waiting for it "
+                "(%d known devices restored)", len(self._known_devices),
+            )
+            return
+        # No registry (first install): discovery is the only source of devices.
         await asyncio.sleep(MDNS_TIMEOUT * 3)
         self._browser_ready.set()
         LOGGER.info(

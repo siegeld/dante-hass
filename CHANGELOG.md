@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.1] - 2026-10-21
+
+### Fixed
+- **Entities no longer stay stale for ~100s after a restart.** 1.2.1 restored
+  the known-device registry so the first poll could reach every device by
+  unicast, but setup still awaited `async_start_browser`, which slept
+  `MDNS_TIMEOUT * 3` (15s) before the first refresh. That sleep runs during HA's
+  bootstrap, when the event loop is starved (14-22s gaps between MainThread log
+  lines, websocket clients "unable to keep up"), and it measured 97-99s on two
+  harbr2 restarts. With a restored registry the browser now starts without
+  waiting; mDNS results fill in on later polls. A first install with no registry
+  still waits, since discovery is its only source of devices.
+
 ## [1.3.0] - 2026-10-21
 
 Merges community PRs #4 and #5 (thanks @salanki), plus the two fixes that make
