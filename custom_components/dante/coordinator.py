@@ -165,7 +165,12 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._known_devices_dirty = False
         try:
             await self._store.async_save({"devices": self._known_devices})
+        except asyncio.CancelledError:
+            self._known_devices_dirty = True
+            raise
         except Exception as err:
+            # Keep retrying on later polls even if discovery has not changed.
+            self._known_devices_dirty = True
             LOGGER.debug("Could not persist Dante devices: %s", err)
 
     async def async_start_browser(self) -> None:
@@ -388,10 +393,20 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             "Device %s IP changed: %s -> %s",
                             server_name, old_ip, new_ip,
                         )
+                    services = {
+                        **existing.get("services", {}),
+                        **mdns_info["services"],
+                    }
+                    props = {**existing.get("props", {}), **mdns_info["props"]}
+                    if (
+                        old_ip != new_ip
+                        or existing.get("services") != services
+                        or existing.get("props") != props
+                    ):
                         self._known_devices_dirty = True
                     existing["ipv4"] = new_ip
-                    existing.setdefault("services", {}).update(mdns_info["services"])
-                    existing.setdefault("props", {}).update(mdns_info["props"])
+                    existing["services"] = services
+                    existing["props"] = props
 
             LOGGER.debug(
                 "Dante poll: %d from mDNS, %d known devices total",
