@@ -174,10 +174,18 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
 
     @property
     def options(self) -> list[str]:
-        """Return all available TX channels and AES67 streams as options."""
+        """Include the receiver's saved route even before TX discovery completes."""
         tx_options = self.coordinator.get_all_tx_channels()
         aes67_options = self.coordinator.get_all_aes67_sources()
-        return [SUBSCRIPTION_NONE] + tx_options + aes67_options
+        options = [SUBSCRIPTION_NONE] + tx_options + aes67_options
+        # HA renders a select as unknown when its current option is absent from
+        # this list. A receiver can report its route while the transmitter has
+        # not been discovered yet, especially after a restart. Keep that route
+        # visible without inventing other channels or persisting stale options.
+        reported_option = self._receiver_option(tx_options)
+        if reported_option not in options:
+            options.append(reported_option)
+        return options
 
     @property
     def current_option(self) -> str | None:
@@ -192,6 +200,10 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
         if aes67_sel:
             return aes67_sel
 
+        return self._receiver_option(self.coordinator.get_all_tx_channels())
+
+    def _receiver_option(self, tx_options: list[str]) -> str:
+        """Resolve this receiver's saved subscription without consulting options."""
         data = self.device_data
         if not data:
             return SUBSCRIPTION_NONE
@@ -202,7 +214,7 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
                 tx_ch = sub.get("tx_channel_name")
                 if tx_dev and tx_ch:
                     option = f"{tx_dev} - {tx_ch}"
-                    if option in self.options:
+                    if option in tx_options:
                         return option
                     # The subscription may report a friendly channel name while
                     # the option pool uses the canonical one. Resolve via the
