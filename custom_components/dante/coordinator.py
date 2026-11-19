@@ -36,6 +36,49 @@ from .netaudio.device import DanteDevice
 
 STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}_known_devices"
+AES67_STORAGE_KEY = f"{DOMAIN}_aes67_selections"
+
+# 0x3000 (rx_status, sub_status) of a channel carrying an AES67 flow: up, or
+# caught mid-establish. See netaudio/device.py for the capture that settled it.
+AES67_FLOW_STATES = ((0x0101, 0x000E), (0x0100, 0x000E))
+AES67_NO_FLOW = (0x0000, 0x0000)
+
+
+def restore_aes67_selections(
+    candidates: dict[tuple[str, int], str],
+    result: dict[str, Any],
+    known_options: set[str],
+) -> tuple[dict[tuple[str, int], str], set[tuple[str, int]]]:
+    """Decide which persisted AES67 selections the devices still carry.
+
+    Returns (adopt, drop). A candidate is ADOPTED when its device answered this
+    poll, the channel has no native subscription, the channel reads as an AES67
+    flow, and the option exists in the SAP table (a select whose current option
+    is not among its options reads "unknown"). It is DROPPED when the device
+    answered and the channel reads no flow -- the flow was torn down while HA was
+    not looking. Anything else (device silent, SAP not filled yet, a transient
+    status) stays a candidate for the next poll.
+    """
+    adopt: dict[tuple[str, int], str] = {}
+    drop: set[tuple[str, int]] = set()
+    for key, option in candidates.items():
+        dev_name, rx_num = key
+        dev = result.get(dev_name)
+        if not dev:
+            continue
+        ch = dev.get("rx_channels", {}).get(rx_num)
+        if not ch:
+            continue
+        native = any(
+            sub.get("rx_channel_name") == ch.get("name")
+            for sub in dev.get("subscriptions", [])
+        )
+        status = (ch.get("rx_status"), ch.get("sub_status"))
+        if native or status == AES67_NO_FLOW:
+            drop.add(key)
+        elif status in AES67_FLOW_STATES and option in known_options:
+            adopt[key] = option
+    return adopt, drop
 
 
 class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -96,6 +139,14 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # every restart.
         self._store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._known_devices_dirty = False
+        # AES67 selections persisted across restarts. A flow is invisible in the
+        # native subscription list, so without this every AES67-fed RX channel
+        # read "None" after an HA restart or a reload -- while the device kept
+        # playing it (measured 2026-11-18 on danterbr5: HA "None", 0x3000
+        # 0101/000e on both channels). Restored entries are only CANDIDATES
+        # until a poll shows the channel still carries a flow.
+        self._aes67_store: Store = Store(hass, STORAGE_VERSION, AES67_STORAGE_KEY)
+        self._aes67_candidates: dict[tuple[str, int], str] = {}
         # Persistent mDNS browser state
         self._browser: AsyncServiceBrowser | None = None
         self._discovered_services: dict[str, str] = {}  # name -> service_type
@@ -157,6 +208,69 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "Restored %d known Dante device(s) from storage; polling by unicast "
             "without waiting for mDNS", restored,
         )
+
+    async def async_load_aes67_selections(self) -> None:
+        """Restore persisted AES67 selections as candidates (see __init__)."""
+        try:
+            stored = await self._aes67_store.async_load()
+        except Exception as err:  # never block setup on a bad store
+            LOGGER.warning("Could not load stored AES67 selections: %s", err)
+            return
+        for entry in (stored or {}).get("selections", []):
+            try:
+                key = (entry["device"], int(entry["rx_channel"]))
+                self._aes67_candidates[key] = entry["option"]
+            except (KeyError, TypeError, ValueError):
+                continue
+        if self._aes67_candidates:
+            LOGGER.info(
+                "Restored %d AES67 selection(s) from storage; adopting each once "
+                "its device reports the flow", len(self._aes67_candidates),
+            )
+
+    def set_aes67_selection(self, key: tuple[str, int], option: str | None) -> None:
+        """Record (or with None, clear) an AES67 selection and persist it."""
+        if option is None:
+            self._aes67_selections.pop(key, None)
+        else:
+            self._aes67_selections[key] = option
+        self._aes67_candidates.pop(key, None)
+        self.hass.async_create_task(self._async_save_aes67_selections())
+
+    async def _async_save_aes67_selections(self) -> None:
+        # Pending candidates are saved too: a restart before they are adopted
+        # must not forget them.
+        merged = {**self._aes67_candidates, **self._aes67_selections}
+        try:
+            await self._aes67_store.async_save({"selections": [
+                {"device": d, "rx_channel": n, "option": o}
+                for (d, n), o in sorted(merged.items())
+            ]})
+        except Exception as err:
+            LOGGER.debug("Could not persist AES67 selections: %s", err)
+
+    def _adopt_restored_aes67(self, result: dict[str, Any]) -> None:
+        if not self._aes67_candidates:
+            return
+        adopt, drop = restore_aes67_selections(
+            self._aes67_candidates, result, set(self.get_all_aes67_sources()),
+        )
+        for key, option in adopt.items():
+            self._aes67_selections.setdefault(key, option)
+            self._aes67_candidates.pop(key, None)
+        for key in drop:
+            self._aes67_candidates.pop(key, None)
+        if adopt:
+            LOGGER.warning(
+                "Restored %d AES67 subscription(s) still flowing on the device: %s",
+                len(adopt), ", ".join(f"{d} ch{n}" for d, n in sorted(adopt)),
+            )
+        if drop:
+            LOGGER.info(
+                "Dropped %d stored AES67 selection(s) the device no longer carries",
+                len(drop),
+            )
+            self.hass.async_create_task(self._async_save_aes67_selections())
 
     async def _async_save_known_devices(self) -> None:
         """Persist the device registry if it changed this cycle."""
@@ -239,6 +353,8 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 dev_data["rx_channels"][num] = {
                     "name": ch.name,
                     "number": ch.number,
+                    "rx_status": ch.status_code,
+                    "sub_status": getattr(ch, "subscription_status_code", None),
                 }
 
         if device.tx_channels:
@@ -553,6 +669,7 @@ class DanteDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Reconcile AES67 subscriptions from device state + SAP streams
             if self._aes67_streams:
                 self._reconcile_aes67_subscriptions(result)
+            self._adopt_restored_aes67(result)
 
             await self._async_save_known_devices()
 

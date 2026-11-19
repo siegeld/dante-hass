@@ -238,7 +238,8 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
         key = (self._device_name, self._rx_channel_num)
 
         if option == SUBSCRIPTION_NONE:
-            had_aes67 = self.coordinator._aes67_selections.pop(key, None)
+            had_aes67 = self.coordinator._aes67_selections.get(key)
+            self.coordinator.set_aes67_selection(key, None)
             try:
                 # An AES67 flow is NOT removed by the native Dante unsubscribe.
                 # Verified 2026-08-28: a flow cleared with remove_subscription
@@ -262,7 +263,7 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
                     if not ok:
                         # Put the selection back: the flow is still running, and
                         # reporting the channel clear would be a lie.
-                        self.coordinator._aes67_selections[key] = had_aes67
+                        self.coordinator.set_aes67_selection(key, had_aes67)
                         LOGGER.error(
                             "AES67 teardown FAILED on %s ch %s -- flow is still "
                             "running; not reporting the channel as clear",
@@ -323,7 +324,7 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
                     stream_info,
                 )
                 if success:
-                    self.coordinator._aes67_selections[key] = option
+                    self.coordinator.set_aes67_selection(key, option)
                     LOGGER.warning(
                         "AES67 subscribed %s ch %d -> %s (flow ch %d)",
                         self._device_name,
@@ -352,7 +353,7 @@ class DanteSubscriptionSelect(DanteEntity, SelectEntity):
             return
 
         # Clear any AES67 override when switching to a Dante source
-        self.coordinator._aes67_selections.pop(key, None)
+        self.coordinator.set_aes67_selection(key, None)
 
         # Parse "DeviceName - ChannelName"
         if " - " not in option:

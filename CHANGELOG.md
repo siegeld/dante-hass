@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.4.0] - 2026-11-18
+
+### Fixed
+- **AES67 subscriptions survive an HA restart or a reload.** After either, every
+  AES67-fed RX select read `None` while the receiver kept playing the flow
+  (danterbr5, 2026-11-18: HA `None`, `0x3000` `0101/000e` on both channels).
+  The selection map was memory-only and the restart reconcile looked for the
+  flow in the native subscription list, where an AES67 flow never appears.
+  Selections now persist (`.storage/dante_aes67_selections`) and are restored
+  per channel once a poll shows that channel still carrying a flow; a channel
+  that reads `0000/0000` drops its entry. Downstream, crestron-nax showed the
+  room as "on, unknown source".
+
 ## [1.3.3] - 2026-10-21
 
 ### Fixed

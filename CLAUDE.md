@@ -128,6 +128,20 @@ discarded. All 21 devices on the fabric, Dante Via included, were checked to
 echo both before that rule went in. Same lesson as #1: match the echo, never
 "the next packet".
 
+**9. After a restart, a live AES67 flow read "None" — and the room played on.**
+The AES67 selection map (`_aes67_selections`) was memory-only, and the restart
+"reconcile" rebuilt it from the native subscription list -- which NEVER contains
+an AES67 flow (no `tx_device_name`, see `netaudio/device.py`). So every
+HA restart or entry reload set every AES67-fed RX select to `None` while the
+receiver kept playing. Measured 2026-11-18 on danterbr5: HA `None` on both
+channels, `0x3000` `0101/000e` on both. Downstream it is worse than cosmetic:
+crestron-nax reads these selects as a Denon room's source, so the room showed
+"on, unknown source". Fixed in 1.4.0: selections persist in the
+`dante_aes67_selections` store and are restored only once a poll shows the
+channel still carrying a flow (`restore_aes67_selections`); a `0000/0000`
+channel drops its entry. A flow set up OUTSIDE HA (Dante Controller) is still
+invisible -- naming its stream needs the `0x3600` flow descriptor, unparsed.
+
 ## Gotchas
 
 - **`update_before_add=True` breaks setup at scale** — it forces a full coordinator

@@ -521,6 +521,10 @@ class DanteDevice:
                         rx_channel.name = rx_channel_name
                         rx_channel.number = channel_number
                         rx_channel.status_code = rx_channel_status_code
+                        # Kept for the AES67 restore: a flow never builds a
+                        # subscription object (no tx_device_name), so this pair
+                        # on the CHANNEL is the only trace of it after a restart.
+                        rx_channel.subscription_status_code = subscription_status_code
 
                         if channel_status_text:
                             rx_channel.status_text = channel_status_text
